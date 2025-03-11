@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net"
@@ -8,7 +9,20 @@ import (
 	"os/exec"
 	"strconv"
 	"time"
+
+	pb "github.com/mouad-eh/gosensus/rpcmessage"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
+
+type server struct {
+	pb.UnimplementedGreeterServer
+}
+
+func (s *server) SayHello(ctx context.Context, in *pb.HelloRequest) (*pb.HelloReply, error) {
+	infoLogger.Printf("Received: %v", in.GetName())
+	return &pb.HelloReply{Message: "Hello " + in.GetName()}, nil
+}
 
 var PORT = map[string]int{
 	"1": 8001,
@@ -38,8 +52,7 @@ func main() {
 
 		listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 		if err != nil {
-			errorLogger.Println("Error starting server:", err)
-			return
+			errorLogger.Fatal("Error starting server:", err)
 		}
 		defer listener.Close()
 
@@ -47,38 +60,39 @@ func main() {
 
 		if nodeID == "1" {
 			// Node 1 sends a message to Node 2
-			var conn net.Conn
-			var err error
+			conn, err := grpc.NewClient("localhost:"+strconv.Itoa(PORT["2"]), grpc.WithTransportCredentials(insecure.NewCredentials()))
+			conn.Connect()
+			if err != nil {
+				errorLogger.Fatalf("did not connect: %v", err)
+			}
+			defer conn.Close()
+			c := pb.NewGreeterClient(conn)
+
+			// Contact the server and print out its response
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+
+			var r *pb.HelloReply
 			for {
-				conn, err = net.Dial("tcp", "localhost:"+strconv.Itoa(PORT["2"]))
+				r, err = c.SayHello(ctx, &pb.HelloRequest{Name: "node1"})
 				if err == nil {
 					break
 				}
-				infoLogger.Println("Waiting for Node 2 to start listening...")
+				infoLogger.Println("Waiting for Node 2 to start...")
 				time.Sleep(1 * time.Second) // Wait before retrying
 			}
-			defer conn.Close()
-
-			infoLogger.Println("Sending a message to Node 2 ...")
-			conn.Write([]byte("Hello, Node 2!"))
+			infoLogger.Printf("Receiving: %s", r.GetMessage())
 		}
 		if nodeID == "2" {
 			// Node 2 receives a message from Node 1
-			conn, err := listener.Accept()
-			if err != nil {
-				errorLogger.Println("Error accepting connection:", err)
-				return
+			s := grpc.NewServer()
+			pb.RegisterGreeterServer(s, &server{})
+			// Serve will start the server and block until the server is stopped
+			if err := s.Serve(listener); err != nil {
+				errorLogger.Fatalf("failed to serve: %v", err)
 			}
-			defer conn.Close()
-
-			message := make([]byte, 1024)
-			numBytes, err := conn.Read(message)
-			if err != nil {
-				errorLogger.Println("Error reading:", err)
-				return
-			}
-			infoLogger.Printf("Received %d bytes from node 1: %s\n", numBytes, string(message))
 		}
+		infoLogger.Printf("%s is about to return...\n", nodeID)
 		return
 	}
 
