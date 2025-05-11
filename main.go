@@ -8,20 +8,27 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
-	"time"
+	_ "time"
 
-	pb "github.com/mouad-eh/gosensus/rpcmessage"
+	pb "github.com/mouad-eh/gosensus/rpc"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	_ "google.golang.org/grpc/credentials/insecure"
 )
 
 type server struct {
-	pb.UnimplementedGreeterServer
+	pb.UnimplementedRaftClientServer
+	nodeID string
 }
 
-func (s *server) SayHello(ctx context.Context, in *pb.HelloRequest) (*pb.HelloReply, error) {
-	infoLogger.Printf("Received: %v", in.GetName())
-	return &pb.HelloReply{Message: "Hello " + in.GetName()}, nil
+func (s *server) Broadcast(ctx context.Context, req *pb.BroadcastRequest) (*pb.BroadcastResponse, error) {
+	infoLogger.Printf("Node %s Received broadcast request: %v", s.nodeID, req.GetMessage())
+	// raft logic (TODO: make sure this thread is blocked until the leader delivers the message
+	// to keep the communication between the client and the nodes synchronous)
+	infoLogger.Printf("Node %s Acknowledged broadcast request: %v", s.nodeID, req.GetMessage())
+	return &pb.BroadcastResponse{
+		Success: true,
+		NodeId:  s.nodeID,
+	}, nil
 }
 
 var PORT = map[string]int{
@@ -58,41 +65,12 @@ func main() {
 
 		infoLogger.Printf("Listening on port %d\n", port)
 
-		if nodeID == "1" {
-			// Node 1 sends a message to Node 2
-			conn, err := grpc.NewClient("localhost:"+strconv.Itoa(PORT["2"]), grpc.WithTransportCredentials(insecure.NewCredentials()))
-			conn.Connect()
-			if err != nil {
-				errorLogger.Fatalf("did not connect: %v", err)
-			}
-			defer conn.Close()
-			c := pb.NewGreeterClient(conn)
-
-			// Contact the server and print out its response
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-
-			var r *pb.HelloReply
-			for {
-				r, err = c.SayHello(ctx, &pb.HelloRequest{Name: "node1"})
-				if err == nil {
-					break
-				}
-				infoLogger.Println("Waiting for Node 2 to start...")
-				time.Sleep(1 * time.Second) // Wait before retrying
-			}
-			infoLogger.Printf("Receiving: %s", r.GetMessage())
+		s := grpc.NewServer()
+		pb.RegisterRaftClientServer(s, &server{nodeID: nodeID})
+		// Serve will start the server and block until the server is stopped
+		if err := s.Serve(listener); err != nil {
+			errorLogger.Fatalf("failed to serve: %v", err)
 		}
-		if nodeID == "2" {
-			// Node 2 receives a message from Node 1
-			s := grpc.NewServer()
-			pb.RegisterGreeterServer(s, &server{})
-			// Serve will start the server and block until the server is stopped
-			if err := s.Serve(listener); err != nil {
-				errorLogger.Fatalf("failed to serve: %v", err)
-			}
-		}
-		infoLogger.Printf("%s is about to return...\n", nodeID)
 		return
 	}
 

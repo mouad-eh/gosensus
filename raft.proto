@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package rpc;
+
+option go_package = "./rpc";
+
+service RaftClient {
+  rpc Broadcast (BroadcastRequest) returns (BroadcastResponse) {}
+}
+
+message BroadcastRequest {
+  string message = 1;
+}
+
+message BroadcastResponse {
+  bool success = 1;
+  string node_id = 2;
+}
