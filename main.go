@@ -8,12 +8,10 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
-	_ "time"
 
 	pb "github.com/mouad-eh/gosensus/rpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	_ "google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
