@@ -1,5 +1,7 @@
 syntax = "proto3";
 
+import "google/protobuf/empty.proto";
+
 package rpc;
 
 option go_package = "./rpc";
@@ -15,4 +17,45 @@ message BroadcastRequest {
 message BroadcastResponse {
   bool success = 1;
   string node_id = 2;
+}
+
+service RaftNode {
+  rpc RequestVote(VoteRequest) returns (google.protobuf.Empty) {}
+  rpc HandleVoteResponse(VoteResponse) returns (google.protobuf.Empty) {}
+  rpc RequestLog(LogRequest) returns (google.protobuf.Empty) {}
+  rpc HandleLogResponse(LogResponse) returns (google.protobuf.Empty) {}
+}
+
+message VoteRequest {
+  string candidate_id = 1;
+  int32 term = 2;
+  int32 log_length = 3;
+  int32 log_term = 4;
+}
+
+message VoteResponse {
+  string voter_id = 1;
+  int32 term = 2;
+  bool granted = 3;
+}
+
+message LogEntry {
+  string message = 1;
+  int32 term = 2;
+}
+
+message LogRequest {
+  string leader_id = 1;
+  int32 term = 2;
+  int32 prefix_len = 3;
+  int32 prefix_term = 4;
+  int32 commit_length = 5;
+  repeated LogEntry suffix = 6;
+}
+
+message LogResponse {
+  string follower_id = 1;
+  int32 term = 2;
+  int32 ack = 3;
+  bool success = 4;
 }

@@ -12,12 +12,17 @@ import (
 
 	pb "github.com/mouad-eh/gosensus/rpc"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	_ "google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 type server struct {
 	pb.UnimplementedRaftClientServer
+	pb.UnimplementedRaftNodeServer
 	nodeID string
+	// Map of node ID to RaftNodeClient
+	peers map[string]pb.RaftNodeClient
 }
 
 func (s *server) Broadcast(ctx context.Context, req *pb.BroadcastRequest) (*pb.BroadcastResponse, error) {
@@ -31,12 +36,46 @@ func (s *server) Broadcast(ctx context.Context, req *pb.BroadcastRequest) (*pb.B
 	}, nil
 }
 
-var PORT = map[string]int{
+// RaftNodeServer implementation
+func (s *server) RequestVote(ctx context.Context, req *pb.VoteRequest) (*emptypb.Empty, error) {
+	infoLogger.Printf("Node %s received vote request from %s for term %d", s.nodeID, req.CandidateId, req.Term)
+	return &emptypb.Empty{}, nil
+}
+
+func (s *server) HandleVoteResponse(ctx context.Context, resp *pb.VoteResponse) (*emptypb.Empty, error) {
+	infoLogger.Printf("Node %s received vote response from %s: granted=%v for term %d",
+		s.nodeID, resp.VoterId, resp.Granted, resp.Term)
+	return &emptypb.Empty{}, nil
+}
+
+func (s *server) RequestLog(ctx context.Context, req *pb.LogRequest) (*emptypb.Empty, error) {
+	infoLogger.Printf("Node %s received log request from leader %s for term %d",
+		s.nodeID, req.LeaderId, req.Term)
+	return &emptypb.Empty{}, nil
+}
+
+func (s *server) HandleLogResponse(ctx context.Context, resp *pb.LogResponse) (*emptypb.Empty, error) {
+	infoLogger.Printf("Node %s received log response from follower %s: success=%v for term %d",
+		s.nodeID, resp.FollowerId, resp.Success, resp.Term)
+	return &emptypb.Empty{}, nil
+}
+
+// Ports for client-server communication
+var CLIENT_PORT = map[string]int{
 	"1": 8001,
 	"2": 8002,
 	"3": 8003,
 	"4": 8004,
 	"5": 8005,
+}
+
+// Ports for inter-node communication
+var NODE_PORT = map[string]int{
+	"1": 9001,
+	"2": 9002,
+	"3": 9003,
+	"4": 9004,
+	"5": 9005,
 }
 
 var infoLogger = log.New(os.Stdout, "", log.Ltime|log.Lshortfile)
@@ -53,24 +92,66 @@ func main() {
 
 		infoLogger.Printf("Starting ...")
 
-		// Start the Raft node
+		// Create server instance
+		s := &server{
+			nodeID: nodeID,
+			peers:  make(map[string]pb.RaftNodeClient),
+		}
 
-		port := PORT[nodeID]
+		// Connect to all other nodes
+		for id, port := range NODE_PORT {
+			if id != nodeID {
+				conn, err := grpc.NewClient(fmt.Sprintf("localhost:%d", port), grpc.WithTransportCredentials(insecure.NewCredentials()))
+				if err != nil {
+					errorLogger.Fatalf("Failed to connect to node %s: %v", id, err)
+				}
+				s.peers[id] = pb.NewRaftNodeClient(conn)
+				infoLogger.Printf("Connected to node %s", id)
+			}
+		}
 
-		listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+		// Start client server
+		clientPort := CLIENT_PORT[nodeID]
+		clientListener, err := net.Listen("tcp", fmt.Sprintf(":%d", clientPort))
 		if err != nil {
-			errorLogger.Fatal("Error starting server:", err)
+			errorLogger.Fatal("Error starting client server:", err)
 		}
-		defer listener.Close()
+		defer clientListener.Close()
 
-		infoLogger.Printf("Listening on port %d\n", port)
+		infoLogger.Printf("Client server listening on port %d\n", clientPort)
 
-		s := grpc.NewServer()
-		pb.RegisterRaftClientServer(s, &server{nodeID: nodeID})
-		// Serve will start the server and block until the server is stopped
-		if err := s.Serve(listener); err != nil {
-			errorLogger.Fatalf("failed to serve: %v", err)
+		clientServer := grpc.NewServer()
+		pb.RegisterRaftClientServer(clientServer, s)
+
+		// Start node server
+		nodePort := NODE_PORT[nodeID]
+		nodeListener, err := net.Listen("tcp", fmt.Sprintf(":%d", nodePort))
+		if err != nil {
+			errorLogger.Fatal("Error starting node server:", err)
 		}
+		defer nodeListener.Close()
+
+		infoLogger.Printf("Node server listening on port %d\n", nodePort)
+
+		nodeServer := grpc.NewServer()
+		pb.RegisterRaftNodeServer(nodeServer, s)
+
+		// Start both servers in separate goroutines
+		go func() {
+			if err := clientServer.Serve(clientListener); err != nil {
+				errorLogger.Fatalf("failed to serve client server: %v", err)
+			}
+		}()
+
+		go func() {
+			if err := nodeServer.Serve(nodeListener); err != nil {
+				errorLogger.Fatalf("failed to serve node server: %v", err)
+			}
+		}()
+
+		// Wait indefinitely
+		select {}
+
 		return
 	}
 
@@ -113,8 +194,6 @@ func main() {
 			errorLogger.Fatalf("Node %s exited with error: %v", cmd.Args[2], err)
 		}
 	}
-
-	// Wait for all processes to finish if desired
 
 	infoLogger.Println("All nodes finished execution")
 }

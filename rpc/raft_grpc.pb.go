@@ -11,6 +11,7 @@ import (
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
+	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
 // This is a compile-time assertion to ensure that this generated file
@@ -114,6 +115,222 @@ var RaftClient_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Broadcast",
 			Handler:    _RaftClient_Broadcast_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "raft.proto",
+}
+
+const (
+	RaftNode_RequestVote_FullMethodName        = "/rpc.RaftNode/RequestVote"
+	RaftNode_HandleVoteResponse_FullMethodName = "/rpc.RaftNode/HandleVoteResponse"
+	RaftNode_RequestLog_FullMethodName         = "/rpc.RaftNode/RequestLog"
+	RaftNode_HandleLogResponse_FullMethodName  = "/rpc.RaftNode/HandleLogResponse"
+)
+
+// RaftNodeClient is the client API for RaftNode service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+type RaftNodeClient interface {
+	RequestVote(ctx context.Context, in *VoteRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	HandleVoteResponse(ctx context.Context, in *VoteResponse, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	RequestLog(ctx context.Context, in *LogRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	HandleLogResponse(ctx context.Context, in *LogResponse, opts ...grpc.CallOption) (*emptypb.Empty, error)
+}
+
+type raftNodeClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewRaftNodeClient(cc grpc.ClientConnInterface) RaftNodeClient {
+	return &raftNodeClient{cc}
+}
+
+func (c *raftNodeClient) RequestVote(ctx context.Context, in *VoteRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, RaftNode_RequestVote_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *raftNodeClient) HandleVoteResponse(ctx context.Context, in *VoteResponse, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, RaftNode_HandleVoteResponse_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *raftNodeClient) RequestLog(ctx context.Context, in *LogRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, RaftNode_RequestLog_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *raftNodeClient) HandleLogResponse(ctx context.Context, in *LogResponse, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, RaftNode_HandleLogResponse_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// RaftNodeServer is the server API for RaftNode service.
+// All implementations must embed UnimplementedRaftNodeServer
+// for forward compatibility.
+type RaftNodeServer interface {
+	RequestVote(context.Context, *VoteRequest) (*emptypb.Empty, error)
+	HandleVoteResponse(context.Context, *VoteResponse) (*emptypb.Empty, error)
+	RequestLog(context.Context, *LogRequest) (*emptypb.Empty, error)
+	HandleLogResponse(context.Context, *LogResponse) (*emptypb.Empty, error)
+	mustEmbedUnimplementedRaftNodeServer()
+}
+
+// UnimplementedRaftNodeServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedRaftNodeServer struct{}
+
+func (UnimplementedRaftNodeServer) RequestVote(context.Context, *VoteRequest) (*emptypb.Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RequestVote not implemented")
+}
+func (UnimplementedRaftNodeServer) HandleVoteResponse(context.Context, *VoteResponse) (*emptypb.Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method HandleVoteResponse not implemented")
+}
+func (UnimplementedRaftNodeServer) RequestLog(context.Context, *LogRequest) (*emptypb.Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RequestLog not implemented")
+}
+func (UnimplementedRaftNodeServer) HandleLogResponse(context.Context, *LogResponse) (*emptypb.Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method HandleLogResponse not implemented")
+}
+func (UnimplementedRaftNodeServer) mustEmbedUnimplementedRaftNodeServer() {}
+func (UnimplementedRaftNodeServer) testEmbeddedByValue()                  {}
+
+// UnsafeRaftNodeServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to RaftNodeServer will
+// result in compilation errors.
+type UnsafeRaftNodeServer interface {
+	mustEmbedUnimplementedRaftNodeServer()
+}
+
+func RegisterRaftNodeServer(s grpc.ServiceRegistrar, srv RaftNodeServer) {
+	// If the following call pancis, it indicates UnimplementedRaftNodeServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&RaftNode_ServiceDesc, srv)
+}
+
+func _RaftNode_RequestVote_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VoteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RaftNodeServer).RequestVote(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RaftNode_RequestVote_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RaftNodeServer).RequestVote(ctx, req.(*VoteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RaftNode_HandleVoteResponse_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VoteResponse)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RaftNodeServer).HandleVoteResponse(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RaftNode_HandleVoteResponse_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RaftNodeServer).HandleVoteResponse(ctx, req.(*VoteResponse))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RaftNode_RequestLog_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LogRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RaftNodeServer).RequestLog(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RaftNode_RequestLog_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RaftNodeServer).RequestLog(ctx, req.(*LogRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RaftNode_HandleLogResponse_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LogResponse)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RaftNodeServer).HandleLogResponse(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RaftNode_HandleLogResponse_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RaftNodeServer).HandleLogResponse(ctx, req.(*LogResponse))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// RaftNode_ServiceDesc is the grpc.ServiceDesc for RaftNode service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var RaftNode_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "rpc.RaftNode",
+	HandlerType: (*RaftNodeServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "RequestVote",
+			Handler:    _RaftNode_RequestVote_Handler,
+		},
+		{
+			MethodName: "HandleVoteResponse",
+			Handler:    _RaftNode_HandleVoteResponse_Handler,
+		},
+		{
+			MethodName: "RequestLog",
+			Handler:    _RaftNode_RequestLog_Handler,
+		},
+		{
+			MethodName: "HandleLogResponse",
+			Handler:    _RaftNode_HandleLogResponse_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
