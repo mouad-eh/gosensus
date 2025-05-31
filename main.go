@@ -90,13 +90,13 @@ var errorLogger = log.New(os.Stderr, "", log.Ltime|log.Lshortfile)
 
 func (s *server) initDB() error {
 	// Create data directory if it doesn't exist
-	dataDir := filepath.Join("data", s.nodeID)
-	if err := os.MkdirAll(dataDir, 0755); err != nil {
+	stateDir := filepath.Join("state", s.nodeID)
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
 		return fmt.Errorf("failed to create data directory: %v", err)
 	}
 
 	// Open SQLite database
-	dbPath := filepath.Join(dataDir, "raft.db")
+	dbPath := filepath.Join(stateDir, "raft.db")
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		return fmt.Errorf("failed to open database: %v", err)
