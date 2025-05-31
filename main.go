@@ -2,14 +2,17 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"flag"
 	"fmt"
 	"log"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
 	pb "github.com/mouad-eh/gosensus/rpc"
@@ -80,24 +83,6 @@ func (s *server) HandleLogResponse(ctx context.Context, resp *pb.LogResponse) (*
 	infoLogger.Printf("Node %s received log response from follower %s: success=%v for term %d",
 		s.nodeID, resp.FollowerId, resp.Success, resp.Term)
 	return &emptypb.Empty{}, nil
-}
-
-// Ports for client-server communication
-var CLIENT_PORT = map[string]int{
-	"1": 8001,
-	"2": 8002,
-	"3": 8003,
-	"4": 8004,
-	"5": 8005,
-}
-
-// Ports for inter-node communication
-var NODE_PORT = map[string]int{
-	"1": 9001,
-	"2": 9002,
-	"3": 9003,
-	"4": 9004,
-	"5": 9005,
 }
 
 var infoLogger = log.New(os.Stdout, "", log.Ltime|log.Lshortfile)
@@ -276,135 +261,117 @@ func (s *server) setCommitLength(length int32) {
 	}
 }
 
+// generateNodeID creates a consistent node ID from IP address and port
+func generateNodeID(addr string) string {
+	// Create a hash of the address
+	hash := sha256.Sum256([]byte(addr))
+	// Take first 8 characters of the hex representation for a shorter ID
+	return hex.EncodeToString(hash[:])[:8]
+}
+
 func main() {
-	// Check if this is a child process
-	if len(os.Args) > 1 && os.Args[1] == "child" {
-		// This is a child process
-		nodeID := os.Args[2]
+	// Define command line flags
+	ipAddr := flag.String("ip", "localhost", "Node IP address")
+	clientPort := flag.Int("client-port", 0, "Client server port")
+	nodePort := flag.Int("node-port", 0, "Node server port")
+	peersStr := flag.String("peers", "", "Comma-separated list of peer addresses (e.g., localhost:9002,localhost:9003)")
+	flag.Parse()
 
-		infoLogger.SetPrefix(fmt.Sprintf("[INFO] Node %s: ", nodeID))
-		errorLogger.SetPrefix(fmt.Sprintf("[ERROR] Node %s: ", nodeID))
-
-		infoLogger.Printf("Starting ...")
-
-		// Create server instance
-		s := &server{
-			nodeID:        nodeID,
-			peers:         make(map[string]pb.RaftNodeClient),
-			currentRole:   "follower",
-			currentLeader: "",
-			votesReceived: make(map[string]struct{}),
-			sentLength:    make(map[string]int32),
-			ackedLength:   make(map[string]int32),
-		}
-
-		// Initialize database
-		if err := s.initDB(); err != nil {
-			errorLogger.Fatalf("Failed to initialize database: %v", err)
-		}
-		defer s.db.Close()
-
-		// Load persistent state from disk
-		if err := s.loadFromDisk(); err != nil {
-			errorLogger.Printf("Failed to load state from disk: %v", err)
-		}
-
-		// Connect to all other nodes
-		for id, port := range NODE_PORT {
-			if id != nodeID {
-				conn, err := grpc.NewClient(fmt.Sprintf("localhost:%d", port), grpc.WithTransportCredentials(insecure.NewCredentials()))
-				if err != nil {
-					errorLogger.Fatalf("Failed to connect to node %s: %v", id, err)
-				}
-				s.peers[id] = pb.NewRaftNodeClient(conn)
-				infoLogger.Printf("Connected to node %s", id)
-			}
-		}
-
-		// Start client server
-		clientPort := CLIENT_PORT[nodeID]
-		clientListener, err := net.Listen("tcp", fmt.Sprintf(":%d", clientPort))
-		if err != nil {
-			errorLogger.Fatal("Error starting client server:", err)
-		}
-		defer clientListener.Close()
-
-		infoLogger.Printf("Client server listening on port %d\n", clientPort)
-
-		clientServer := grpc.NewServer()
-		pb.RegisterRaftClientServer(clientServer, s)
-
-		// Start node server
-		nodePort := NODE_PORT[nodeID]
-		nodeListener, err := net.Listen("tcp", fmt.Sprintf(":%d", nodePort))
-		if err != nil {
-			errorLogger.Fatal("Error starting node server:", err)
-		}
-		defer nodeListener.Close()
-
-		infoLogger.Printf("Node server listening on port %d\n", nodePort)
-
-		nodeServer := grpc.NewServer()
-		pb.RegisterRaftNodeServer(nodeServer, s)
-
-		// Start both servers in separate goroutines
-		go func() {
-			if err := clientServer.Serve(clientListener); err != nil {
-				errorLogger.Fatalf("failed to serve client server: %v", err)
-			}
-		}()
-
-		go func() {
-			if err := nodeServer.Serve(nodeListener); err != nil {
-				errorLogger.Fatalf("failed to serve node server: %v", err)
-			}
-		}()
-
-		// Wait indefinitely
-		select {}
-
-		return
+	// Validate required flags
+	if *clientPort == 0 || *nodePort == 0 {
+		fmt.Println("Error: --client-port and --node-port are required")
+		flag.Usage()
+		os.Exit(1)
 	}
 
-	infoLogger.SetPrefix("[INFO] Initiator: ")
-	errorLogger.SetPrefix("[ERROR] Initiator: ")
+	// Generate node address and ID
+	nodeAddr := fmt.Sprintf("%s:%d", *ipAddr, *nodePort)
+	nodeID := generateNodeID(nodeAddr)
 
-	// Parent process: spawn child processes
-	numNodes := 5 // Number of Raft nodes
-
-	var nodes []*exec.Cmd
-	for i := 1; i <= numNodes; i++ {
-		nodeID := strconv.Itoa(i)
-
-		// Get the path to the current executable
-		executable, err := os.Executable()
-		if err != nil {
-			errorLogger.Fatalf("Failed to get executable path: %v", err)
-		}
-
-		// Create the command to run a child process
-		cmd := exec.Command(executable, "child", nodeID)
-		nodes = append(nodes, cmd)
-
-		// Set up pipes for stdout and stderr
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-
-		// Start the process
-		err = cmd.Start()
-		if err != nil {
-			errorLogger.Fatalf("Failed to start node %s: %v", nodeID, err)
-		}
-
-		infoLogger.Printf("Started node %s with PID %d\n", nodeID, cmd.Process.Pid)
+	// Parse peer addresses
+	peerAddrs := strings.Split(*peersStr, ",")
+	for i := range peerAddrs {
+		peerAddrs[i] = strings.TrimSpace(peerAddrs[i])
 	}
 
-	for _, cmd := range nodes {
-		err := cmd.Wait()
-		if err != nil {
-			errorLogger.Fatalf("Node %s exited with error: %v", cmd.Args[2], err)
-		}
+	infoLogger.SetPrefix(fmt.Sprintf("[INFO] Node %s: ", nodeID))
+	errorLogger.SetPrefix(fmt.Sprintf("[ERROR] Node %s: ", nodeID))
+
+	infoLogger.Printf("Starting node %s (%s) with client port %d and node port %d", nodeID, nodeAddr, *clientPort, *nodePort)
+
+	// Create server instance
+	s := &server{
+		nodeID:        nodeID,
+		peers:         make(map[string]pb.RaftNodeClient),
+		currentRole:   "follower",
+		currentLeader: "",
+		votesReceived: make(map[string]struct{}),
+		sentLength:    make(map[string]int32),
+		ackedLength:   make(map[string]int32),
 	}
 
-	infoLogger.Println("All nodes finished execution")
+	// Initialize database
+	if err := s.initDB(); err != nil {
+		errorLogger.Fatalf("Failed to initialize database: %v", err)
+	}
+	defer s.db.Close()
+
+	// Load persistent state from disk
+	if err := s.loadFromDisk(); err != nil {
+		errorLogger.Printf("Failed to load state from disk: %v", err)
+	}
+
+	// Connect to all peers
+	for _, peerAddr := range peerAddrs {
+		if peerAddr == "" {
+			continue
+		}
+		peerID := generateNodeID(peerAddr)
+		conn, err := grpc.NewClient(peerAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			errorLogger.Fatalf("Failed to connect to peer %s at %s: %v", peerID, peerAddr, err)
+		}
+		s.peers[peerID] = pb.NewRaftNodeClient(conn)
+		infoLogger.Printf("Connected to peer %s at %s", peerID, peerAddr)
+	}
+
+	// Start client server
+	clientListener, err := net.Listen("tcp", fmt.Sprintf(":%d", *clientPort))
+	if err != nil {
+		errorLogger.Fatal("Error starting client server:", err)
+	}
+	defer clientListener.Close()
+
+	infoLogger.Printf("Client server listening on port %d", *clientPort)
+
+	clientServer := grpc.NewServer()
+	pb.RegisterRaftClientServer(clientServer, s)
+
+	// Start node server
+	nodeListener, err := net.Listen("tcp", fmt.Sprintf(":%d", *nodePort))
+	if err != nil {
+		errorLogger.Fatal("Error starting node server:", err)
+	}
+	defer nodeListener.Close()
+
+	infoLogger.Printf("Node server listening on port %d", *nodePort)
+
+	nodeServer := grpc.NewServer()
+	pb.RegisterRaftNodeServer(nodeServer, s)
+
+	// Start both servers in separate goroutines
+	go func() {
+		if err := clientServer.Serve(clientListener); err != nil {
+			errorLogger.Fatalf("failed to serve client server: %v", err)
+		}
+	}()
+
+	go func() {
+		if err := nodeServer.Serve(nodeListener); err != nil {
+			errorLogger.Fatalf("failed to serve node server: %v", err)
+		}
+	}()
+
+	// Wait indefinitely
+	select {}
 }
