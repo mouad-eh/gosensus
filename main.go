@@ -275,6 +275,7 @@ func main() {
 	clientPort := flag.Int("client-port", 0, "Client server port")
 	nodePort := flag.Int("node-port", 0, "Node server port")
 	peersStr := flag.String("peers", "", "Comma-separated list of peer addresses (e.g., localhost:9002,localhost:9003)")
+	leaderAddr := flag.String("leader", "", "Address of the designated leader node (e.g., localhost:9001)")
 	flag.Parse()
 
 	// Validate required flags
@@ -287,6 +288,18 @@ func main() {
 	// Generate node address and ID
 	nodeAddr := fmt.Sprintf("%s:%d", *ipAddr, *nodePort)
 	nodeID := generateNodeID(nodeAddr)
+
+	// Generate leader ID if leader address is provided
+	var leaderID string
+	if *leaderAddr != "" {
+		leaderID = generateNodeID(*leaderAddr)
+	}
+
+	// Set initial role
+	currentRole := "follower"
+	if *leaderAddr == nodeAddr {
+		currentRole = "leader"
+	}
 
 	// Parse peer addresses
 	peerAddrs := strings.Split(*peersStr, ",")
@@ -303,8 +316,8 @@ func main() {
 	s := &server{
 		nodeID:        nodeID,
 		peers:         make(map[string]pb.RaftNodeClient),
-		currentRole:   "follower",
-		currentLeader: "",
+		currentRole:   currentRole,
+		currentLeader: leaderID,
 		votesReceived: make(map[string]struct{}),
 		sentLength:    make(map[string]int32),
 		ackedLength:   make(map[string]int32),
