@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"log"
 	"net"
 	"os"
 
@@ -22,26 +21,6 @@ type DiskState struct {
 	VotedFor     string        `json:"voted_for"`
 	Log          []pb.LogEntry `json:"log"`
 	CommitLength int32         `json:"commit_length"`
-}
-
-// Logger interface defines the logging methods
-type Logger interface {
-	Info(format string, v ...interface{})
-	Error(format string, v ...interface{})
-}
-
-// DefaultLogger implements the Logger interface using standard log package
-type DefaultLogger struct {
-	infoLogger  *log.Logger
-	errorLogger *log.Logger
-}
-
-func (l *DefaultLogger) Info(format string, v ...interface{}) {
-	l.infoLogger.Printf(format, v...)
-}
-
-func (l *DefaultLogger) Error(format string, v ...interface{}) {
-	l.errorLogger.Printf(format, v...)
 }
 
 type Server struct {
@@ -64,7 +43,7 @@ type Server struct {
 	// Storage
 	storage Storage
 	// Logger
-	logger Logger
+	logger *Logger
 }
 
 // Update the setter methods to use the storage interface
@@ -97,7 +76,7 @@ func (s *Server) setCommitLength(length int32) {
 }
 
 // NewServer creates a new Raft server instance
-func NewServer(nodeAddr string, leaderAddr string, loggers ...Logger) *Server {
+func NewServer(nodeAddr string, leaderAddr string) *Server {
 	nodeID := generateNodeID(nodeAddr)
 
 	// Generate leader ID if leader address is provided
@@ -112,21 +91,6 @@ func NewServer(nodeAddr string, leaderAddr string, loggers ...Logger) *Server {
 		currentRole = "leader"
 	}
 
-	// Set up default logger if none provided
-	var logger Logger
-	if len(loggers) > 0 {
-		logger = loggers[0]
-	} else {
-		infoLogger := log.New(os.Stdout, "", log.Ltime|log.Lshortfile)
-		errorLogger := log.New(os.Stderr, "", log.Ltime|log.Lshortfile)
-		infoLogger.SetPrefix(fmt.Sprintf("[INFO] Node %s: ", nodeID))
-		errorLogger.SetPrefix(fmt.Sprintf("[ERROR] Node %s: ", nodeID))
-		logger = &DefaultLogger{
-			infoLogger:  infoLogger,
-			errorLogger: errorLogger,
-		}
-	}
-
 	return &Server{
 		nodeID:        nodeID,
 		peers:         make(map[string]pb.RaftNodeClient),
@@ -136,7 +100,7 @@ func NewServer(nodeAddr string, leaderAddr string, loggers ...Logger) *Server {
 		sentLength:    make(map[string]int32),
 		ackedLength:   make(map[string]int32),
 		storage:       NewSQLiteStorage(),
-		logger:        logger,
+		logger:        NewLogger(nodeID),
 	}
 }
 
@@ -149,10 +113,10 @@ func generateNodeID(addr string) string {
 }
 
 func (s *Server) Broadcast(ctx context.Context, req *pb.BroadcastRequest) (*pb.BroadcastResponse, error) {
-	s.logger.Info("Node %s Received broadcast request: %v", s.nodeID, req.GetMessage())
+	s.logger.Info("Received broadcast request: %v", req.GetMessage())
 	// raft logic (TODO: make sure this thread is blocked until the leader delivers the message
 	// to keep the communication between the client and the nodes synchronous)
-	s.logger.Info("Node %s Acknowledged broadcast request: %v", s.nodeID, req.GetMessage())
+	s.logger.Info("Acknowledged broadcast request: %v", req.GetMessage())
 	return &pb.BroadcastResponse{
 		Success: true,
 		NodeId:  s.nodeID,
@@ -161,25 +125,25 @@ func (s *Server) Broadcast(ctx context.Context, req *pb.BroadcastRequest) (*pb.B
 
 // RaftNodeServer implementation
 func (s *Server) RequestVote(ctx context.Context, req *pb.VoteRequest) (*emptypb.Empty, error) {
-	s.logger.Info("Node %s received vote request from %s for term %d", s.nodeID, req.CandidateId, req.Term)
+	s.logger.Info("Received vote request from %s for term %d", req.CandidateId, req.Term)
 	return &emptypb.Empty{}, nil
 }
 
 func (s *Server) HandleVoteResponse(ctx context.Context, resp *pb.VoteResponse) (*emptypb.Empty, error) {
-	s.logger.Info("Node %s received vote response from %s: granted=%v for term %d",
-		s.nodeID, resp.VoterId, resp.Granted, resp.Term)
+	s.logger.Info("Received vote response from %s: granted=%v for term %d",
+		resp.VoterId, resp.Granted, resp.Term)
 	return &emptypb.Empty{}, nil
 }
 
 func (s *Server) RequestLog(ctx context.Context, req *pb.LogRequest) (*emptypb.Empty, error) {
-	s.logger.Info("Node %s received log request from leader %s for term %d",
-		s.nodeID, req.LeaderId, req.Term)
+	s.logger.Info("Received log request from leader %s for term %d",
+		req.LeaderId, req.Term)
 	return &emptypb.Empty{}, nil
 }
 
 func (s *Server) HandleLogResponse(ctx context.Context, resp *pb.LogResponse) (*emptypb.Empty, error) {
-	s.logger.Info("Node %s received log response from follower %s: success=%v for term %d",
-		s.nodeID, resp.FollowerId, resp.Success, resp.Term)
+	s.logger.Info("Received log response from follower %s: success=%v for term %d",
+		resp.FollowerId, resp.Success, resp.Term)
 	return &emptypb.Empty{}, nil
 }
 
