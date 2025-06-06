@@ -15,92 +15,109 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
-// DiskState represents the persistent state stored on disk
-type DiskState struct {
-	CurrentTerm  int32         `json:"current_term"`
-	VotedFor     string        `json:"voted_for"`
-	Log          []pb.LogEntry `json:"log"`
-	CommitLength int32         `json:"commit_length"`
-}
-
 type Server struct {
 	pb.UnimplementedRaftClientServer
 	pb.UnimplementedRaftNodeServer
 	nodeID string
 	// Map of node ID to RaftNodeClient
 	peers map[string]pb.RaftNodeClient
-	// DISK
-	currentTerm  int32
-	votedFor     string
-	log          []pb.LogEntry
-	commitLength int32
-	// RAM
-	currentRole   string
-	currentLeader string
-	votesReceived map[string]struct{}
-	sentLength    map[string]int32
-	ackedLength   map[string]int32
+	// State
+	PersistentState
+	VolatileState
 	// Storage
 	storage Storage
 	// Logger
 	logger *Logger
 }
 
-// Update the setter methods to use the storage interface
-func (s *Server) setCurrentTerm(term int32) {
-	s.currentTerm = term
-	if err := s.storage.SaveState(s.currentTerm, s.votedFor, s.commitLength, s.log); err != nil {
-		s.logger.Error("Failed to save state after setting term: %v", err)
-	}
+type PersistentState struct {
+	CurrentTerm  int32      `json:"current_term"`
+	VotedFor     string     `json:"voted_for"`
+	Log          []LogEntry `json:"log"`
+	CommitLength int32      `json:"commit_length"`
 }
 
-func (s *Server) setVotedFor(votedFor string) {
-	s.votedFor = votedFor
-	if err := s.storage.SaveState(s.currentTerm, s.votedFor, s.commitLength, s.log); err != nil {
-		s.logger.Error("Failed to save state after setting votedFor: %v", err)
-	}
+type LogEntry struct {
+	Message string `json:"message"`
+	Term    int32  `json:"term"`
 }
 
-func (s *Server) appendLog(entry pb.LogEntry) {
-	s.log = append(s.log, entry)
-	if err := s.storage.SaveState(s.currentTerm, s.votedFor, s.commitLength, s.log); err != nil {
-		s.logger.Error("Failed to save state after appending log: %v", err)
-	}
+type VolatileState struct {
+	CurrentRole   string
+	CurrentLeader string
+	VotesReceived map[string]struct{}
+	SentLength    map[string]int32
+	AckedLength   map[string]int32
 }
 
-func (s *Server) setCommitLength(length int32) {
-	s.commitLength = length
-	if err := s.storage.SaveState(s.currentTerm, s.votedFor, s.commitLength, s.log); err != nil {
-		s.logger.Error("Failed to save state after setting commit length: %v", err)
+func (s *Server) setCurrentTerm(term int32) error {
+	s.CurrentTerm = term
+	if err := s.storage.SaveCurrentTerm(term); err != nil {
+		return fmt.Errorf("failed to save state after setting term: %w", err)
 	}
+	return nil
+}
+
+func (s *Server) setVotedFor(votedFor string) error {
+	s.VotedFor = votedFor
+	if err := s.storage.SaveVotedFor(votedFor); err != nil {
+		return fmt.Errorf("failed to save state after setting votedFor: %w", err)
+	}
+	return nil
+}
+
+func (s *Server) appendLog(entry LogEntry) error {
+	s.Log = append(s.Log, entry)
+	if err := s.storage.AppendLog(entry); err != nil {
+		return fmt.Errorf("failed to save state after appending log: %w", err)
+	}
+	return nil
+}
+
+func (s *Server) trimLog(startIndex int32) error {
+	s.Log = s.Log[:startIndex]
+	if err := s.storage.TrimLog(startIndex); err != nil {
+		return fmt.Errorf("failed to save state after trimming log: %w", err)
+	}
+	return nil
+}
+
+func (s *Server) setCommitLength(length int32) error {
+	s.CommitLength = length
+	if err := s.storage.SaveCommitLength(length); err != nil {
+		return fmt.Errorf("failed to save state after setting commit length: %w", err)
+	}
+	return nil
 }
 
 // NewServer creates a new Raft server instance
 func NewServer(nodeAddr string, leaderAddr string) *Server {
 	nodeID := generateNodeID(nodeAddr)
+	leaderID := generateNodeID(leaderAddr)
 
-	// Generate leader ID if leader address is provided
-	var leaderID string
-	if leaderAddr != "" {
-		leaderID = generateNodeID(leaderAddr)
-	}
-
-	// Set initial role
 	currentRole := "follower"
 	if leaderAddr == nodeAddr {
 		currentRole = "leader"
 	}
 
 	return &Server{
-		nodeID:        nodeID,
-		peers:         make(map[string]pb.RaftNodeClient),
-		currentRole:   currentRole,
-		currentLeader: leaderID,
-		votesReceived: make(map[string]struct{}),
-		sentLength:    make(map[string]int32),
-		ackedLength:   make(map[string]int32),
-		storage:       NewSQLiteStorage(),
-		logger:        NewLogger(nodeID),
+		nodeID: nodeID,
+		peers:  make(map[string]pb.RaftNodeClient),
+		PersistentState: PersistentState{
+			CurrentTerm:  0,
+			VotedFor:     "",
+			Log:          make([]LogEntry, 0),
+			CommitLength: 0,
+		},
+		VolatileState: VolatileState{
+			CurrentRole:   currentRole,
+			CurrentLeader: leaderID,
+			VotesReceived: make(map[string]struct{}),
+			SentLength:    make(map[string]int32),
+			AckedLength:   make(map[string]int32),
+		},
+		storage: NewJSONStorage(nodeID),
+		logger:  NewLogger(nodeID),
 	}
 }
 
@@ -148,22 +165,28 @@ func (s *Server) HandleLogResponse(ctx context.Context, resp *pb.LogResponse) (*
 }
 
 func (s *Server) Run(clientPort int, nodePort int, peerAddrs []string) error {
+	// Validate required parameters
+	if s.nodeID == "" {
+		return fmt.Errorf("node address is required")
+	}
+	if s.CurrentLeader == "" {
+		return fmt.Errorf("leader address is required")
+	}
+
 	// Initialize storage
 	if err := s.storage.Init(s.nodeID); err != nil {
 		return fmt.Errorf("failed to initialize storage: %v", err)
 	}
-	defer s.storage.Close()
 
 	// Load persistent state from storage
 	currentTerm, votedFor, commitLength, log, err := s.storage.LoadState()
 	if err != nil {
-		s.logger.Error("Failed to load state from storage: %v", err)
-	} else {
-		s.currentTerm = currentTerm
-		s.votedFor = votedFor
-		s.commitLength = commitLength
-		s.log = log
+		return fmt.Errorf("failed to load state from storage: %v", err)
 	}
+	s.CurrentTerm = currentTerm
+	s.VotedFor = votedFor
+	s.CommitLength = commitLength
+	s.Log = log
 
 	// Connect to all peers
 	if err := s.connectToPeers(peerAddrs); err != nil {

@@ -20,8 +20,8 @@ func main() {
 	flag.Parse()
 
 	// Validate required flags
-	if *clientPort == 0 || *nodePort == 0 {
-		fmt.Println("Error: --client-port and --node-port are required")
+	if *clientPort == 0 || *nodePort == 0 || *peersStr == "" || *leaderAddr == "" {
+		fmt.Println("Error: --client-port, --node-port, --peers, and --leader are required")
 		flag.Usage()
 		os.Exit(1)
 	}
