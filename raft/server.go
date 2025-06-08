@@ -165,14 +165,6 @@ func (s *Server) HandleLogResponse(ctx context.Context, resp *pb.LogResponse) (*
 }
 
 func (s *Server) Run(clientPort int, nodePort int, peerAddrs []string) error {
-	// Validate required parameters
-	if s.nodeID == "" {
-		return fmt.Errorf("node address is required")
-	}
-	if s.CurrentLeader == "" {
-		return fmt.Errorf("leader address is required")
-	}
-
 	// Initialize storage
 	if err := s.storage.Init(s.nodeID); err != nil {
 		return fmt.Errorf("failed to initialize storage: %v", err)
