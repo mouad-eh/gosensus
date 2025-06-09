@@ -10,6 +10,7 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 	pb "github.com/mouad-eh/gosensus/rpc"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -27,7 +28,7 @@ type Server struct {
 	// Storage
 	storage Storage
 	// Logger
-	logger *Logger
+	logger *zap.SugaredLogger
 }
 
 type PersistentState struct {
@@ -117,7 +118,7 @@ func NewServer(nodeAddr string, leaderAddr string) *Server {
 			AckedLength:   make(map[string]int32),
 		},
 		storage: NewJSONStorage(nodeID),
-		logger:  NewLogger(nodeID),
+		logger:  NewSugaredZapLogger(nodeID),
 	}
 }
 
@@ -130,7 +131,7 @@ func generateNodeID(addr string) string {
 }
 
 func (s *Server) Broadcast(ctx context.Context, req *pb.BroadcastRequest) (*pb.BroadcastResponse, error) {
-	s.logger.Info("Received broadcast request: %v", req.GetMessage())
+	s.logger.Infow("Received broadcast request", "message", req.GetMessage())
 	// raft logic (TODO: make sure this thread is blocked until the leader delivers the message
 	// to keep the communication between the client and the nodes synchronous)
 	s.logger.Info("Acknowledged broadcast request: %v", req.GetMessage())
@@ -142,25 +143,22 @@ func (s *Server) Broadcast(ctx context.Context, req *pb.BroadcastRequest) (*pb.B
 
 // RaftNodeServer implementation
 func (s *Server) RequestVote(ctx context.Context, req *pb.VoteRequest) (*emptypb.Empty, error) {
-	s.logger.Info("Received vote request from %s for term %d", req.CandidateId, req.Term)
+	s.logger.Infow("Received vote request", "candidate_id", req.CandidateId, "term", req.Term)
 	return &emptypb.Empty{}, nil
 }
 
 func (s *Server) HandleVoteResponse(ctx context.Context, resp *pb.VoteResponse) (*emptypb.Empty, error) {
-	s.logger.Info("Received vote response from %s: granted=%v for term %d",
-		resp.VoterId, resp.Granted, resp.Term)
+	s.logger.Infow("Received vote response", "voter_id", resp.VoterId, "granted", resp.Granted, "term", resp.Term)
 	return &emptypb.Empty{}, nil
 }
 
 func (s *Server) RequestLog(ctx context.Context, req *pb.LogRequest) (*emptypb.Empty, error) {
-	s.logger.Info("Received log request from leader %s for term %d",
-		req.LeaderId, req.Term)
+	s.logger.Infow("Received log request", "leader_id", req.LeaderId, "term", req.Term)
 	return &emptypb.Empty{}, nil
 }
 
 func (s *Server) HandleLogResponse(ctx context.Context, resp *pb.LogResponse) (*emptypb.Empty, error) {
-	s.logger.Info("Received log response from follower %s: success=%v for term %d",
-		resp.FollowerId, resp.Success, resp.Term)
+	s.logger.Infow("Received log response", "follower_id", resp.FollowerId, "success", resp.Success, "term", resp.Term)
 	return &emptypb.Empty{}, nil
 }
 
@@ -205,7 +203,7 @@ func (s *Server) connectToPeers(peerAddrs []string) error {
 			return fmt.Errorf("failed to connect to peer %s at %s: %v", peerID, peerAddr, err)
 		}
 		s.peers[peerID] = pb.NewRaftNodeClient(conn)
-		s.logger.Info("Connected to peer %s at %s", peerID, peerAddr)
+		s.logger.Infow("Connected to peer", "peer_id", peerID, "address", peerAddr)
 	}
 	return nil
 }
@@ -219,7 +217,7 @@ func (s *Server) startServers(clientPort, nodePort int) error {
 	}
 	defer clientListener.Close()
 
-	s.logger.Info("Client Server listening on port %d", clientPort)
+	s.logger.Infow("Client Server listening", "port", clientPort)
 
 	clientServer := grpc.NewServer()
 	pb.RegisterRaftClientServer(clientServer, s)
@@ -231,7 +229,7 @@ func (s *Server) startServers(clientPort, nodePort int) error {
 	}
 	defer nodeListener.Close()
 
-	s.logger.Info("Node Server listening on port %d", nodePort)
+	s.logger.Infow("Node Server listening", "port", nodePort)
 
 	nodeServer := grpc.NewServer()
 	pb.RegisterRaftNodeServer(nodeServer, s)
@@ -239,14 +237,14 @@ func (s *Server) startServers(clientPort, nodePort int) error {
 	// Start both Servers in separate goroutines
 	go func() {
 		if err := clientServer.Serve(clientListener); err != nil {
-			s.logger.Error("failed to serve client Server: %v", err)
+			s.logger.Errorw("Failed to serve client Server", "error", err)
 			os.Exit(1)
 		}
 	}()
 
 	go func() {
 		if err := nodeServer.Serve(nodeListener); err != nil {
-			s.logger.Error("failed to serve node Server: %v", err)
+			s.logger.Errorw("Failed to serve node Server", "error", err)
 			os.Exit(1)
 		}
 	}()

@@ -1,31 +1,29 @@
 package raft
 
 import (
-	"fmt"
-	"log"
-	"os"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
-type Logger struct {
-	infoLogger  *log.Logger
-	errorLogger *log.Logger
-}
-
-func NewLogger(nodeID string) *Logger {
-	infoLogger := log.New(os.Stdout, "", log.Ltime)
-	errorLogger := log.New(os.Stderr, "", log.Ltime)
-	infoLogger.SetPrefix(fmt.Sprintf("[INFO] %s ", nodeID))
-	errorLogger.SetPrefix(fmt.Sprintf("[ERROR] %s ", nodeID))
-	return &Logger{
-		infoLogger:  infoLogger,
-		errorLogger: errorLogger,
+func NewSugaredZapLogger(nodeID string) *zap.SugaredLogger {
+	config := zap.Config{
+		Level:       zap.NewAtomicLevelAt(zap.DebugLevel),
+		Development: true,
+		Encoding:    "json",
+		EncoderConfig: zapcore.EncoderConfig{
+			TimeKey:      "timestamp",
+			LevelKey:     "level",
+			CallerKey:    "caller",
+			MessageKey:   "msg",
+			EncodeLevel:  zapcore.LowercaseLevelEncoder,
+			EncodeTime:   zapcore.RFC3339TimeEncoder,
+			EncodeCaller: zapcore.ShortCallerEncoder,
+		},
+		OutputPaths: []string{"stdout"},
 	}
-}
 
-func (l *Logger) Info(format string, v ...interface{}) {
-	l.infoLogger.Printf(format, v...)
-}
+	logger, _ := config.Build()
+	logger = logger.With(zap.String("nodeID", nodeID))
 
-func (l *Logger) Error(format string, v ...interface{}) {
-	l.errorLogger.Printf(format, v...)
+	return logger.Sugar()
 }
