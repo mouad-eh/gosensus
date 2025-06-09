@@ -134,7 +134,7 @@ func (s *Server) Broadcast(ctx context.Context, req *pb.BroadcastRequest) (*pb.B
 	s.logger.Infow("Received broadcast request", "message", req.GetMessage())
 	// raft logic (TODO: make sure this thread is blocked until the leader delivers the message
 	// to keep the communication between the client and the nodes synchronous)
-	s.logger.Info("Acknowledged broadcast request: %v", req.GetMessage())
+	s.logger.Infow("Acknowledged broadcast request", "message", req.GetMessage())
 	return &pb.BroadcastResponse{
 		Success: true,
 		NodeId:  s.nodeID,
