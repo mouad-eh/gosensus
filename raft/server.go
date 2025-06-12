@@ -135,7 +135,7 @@ func (s *Server) Broadcast(ctx context.Context, req *pb.BroadcastRequest) (*pb.B
 	if s.CurrentRole == "leader" {
 		s.storage.AppendLog(LogEntry{
 			Message: req.GetMessage(),
-			Term:    s.CurAppendEntriesrentTerm,
+			Term:    s.CurrentTerm,
 		})
 		s.AckedLength[s.nodeID] = int32(len(s.Log))
 		for peerID := range s.peers {
