@@ -132,13 +132,54 @@ func generateNodeID(addr string) string {
 
 func (s *Server) Broadcast(ctx context.Context, req *pb.BroadcastRequest) (*pb.BroadcastResponse, error) {
 	s.logger.Infow("Received broadcast request", "message", req.GetMessage())
-	// raft logic (TODO: make sure this thread is blocked until the leader delivers the message
-	// to keep the communication between the client and the nodes synchronous)
+	if s.CurrentRole == "leader" {
+		s.storage.AppendLog(LogEntry{
+			Message: req.GetMessage(),
+			Term:    s.CurAppendEntriesrentTerm,
+		})
+		s.AckedLength[s.nodeID] = int32(len(s.Log))
+		for peerID := range s.peers {
+			if err := s.ReplicateLog(ctx, peerID); err != nil {
+				s.logger.Errorw("Failed to replicate log", "error", err)
+			}
+		}
+	} else {
+		leaderID := s.VolatileState.CurrentLeader
+		leader := s.peers[leaderID]
+		leader.Broadcast(ctx, req)
+	}
 	s.logger.Infow("Acknowledged broadcast request", "message", req.GetMessage())
 	return &pb.BroadcastResponse{
 		Success: true,
 		NodeId:  s.nodeID,
 	}, nil
+}
+
+func (s *Server) ReplicateLog(ctx context.Context, followerID string) error {
+	s.logger.Infow("Replicating log", "follower_id", followerID)
+	prefixLen := s.SentLength[followerID]
+	suffix := s.Log[prefixLen:]
+	prefixTerm := int32(0)
+	if prefixLen > 0 {
+		prefixTerm = s.Log[prefixLen-1].Term
+	}
+	// TODO: not very clean, but it works
+	pb_suffix := make([]*pb.LogEntry, len(suffix))
+	for i, entry := range suffix {
+		pb_suffix[i] = &pb.LogEntry{
+			Message: entry.Message,
+			Term:    entry.Term,
+		}
+	}
+	s.peers[followerID].RequestLog(ctx, &pb.LogRequest{
+		LeaderId:     s.nodeID,
+		Term:         s.CurrentTerm,
+		PrefixLen:    int32(prefixLen),
+		PrefixTerm:   int32(prefixTerm),
+		CommitLength: s.CommitLength,
+		Suffix:       pb_suffix,
+	})
+	return nil
 }
 
 // RaftNodeServer implementation
@@ -154,7 +195,40 @@ func (s *Server) HandleVoteResponse(ctx context.Context, resp *pb.VoteResponse) 
 
 func (s *Server) RequestLog(ctx context.Context, req *pb.LogRequest) (*emptypb.Empty, error) {
 	s.logger.Infow("Received log request", "leader_id", req.LeaderId, "term", req.Term)
+
+	if req.Term > s.CurrentTerm {
+		s.setCurrentTerm(req.Term)
+		s.setVotedFor("")
+		//TODO: cancel election timer
+	}
+	if req.Term == s.CurrentTerm {
+		s.CurrentRole = "follower"
+		s.CurrentLeader = req.LeaderId
+	}
+	logOk := len(s.Log) >= int(req.PrefixLen) && (req.PrefixLen == 0 || s.Log[req.PrefixLen-1].Term == req.PrefixTerm)
+	if req.Term == s.CurrentTerm && logOk {
+		s.AppendEntries(req.PrefixLen, req.CommitLength, req.Suffix)
+		ack := req.PrefixLen + int32(len(req.Suffix))
+		s.peers[req.LeaderId].HandleLogResponse(ctx, &pb.LogResponse{
+			FollowerId: s.nodeID,
+			Term:       s.CurrentTerm,
+			Ack:        ack,
+			Success:    true,
+		})
+	} else {
+		s.peers[req.LeaderId].HandleLogResponse(ctx, &pb.LogResponse{
+			FollowerId: s.nodeID,
+			Term:       s.CurrentTerm,
+			Ack:        0,
+			Success:    false,
+		})
+	}
 	return &emptypb.Empty{}, nil
+}
+
+func (s *Server) AppendEntries(prefixLen int32, leaderCommitLength int32, suffix []*pb.LogEntry) error {
+	s.logger.Infow("Appending entries", "prefix_len", prefixLen, "leader_commit_length", leaderCommitLength, "suffix", suffix)
+	return nil
 }
 
 func (s *Server) HandleLogResponse(ctx context.Context, resp *pb.LogResponse) (*emptypb.Empty, error) {
@@ -192,6 +266,7 @@ func (s *Server) Run(clientPort int, nodePort int, peerAddrs []string) error {
 }
 
 // connectToPeers establishes connections to all peer nodes
+// TODO: rename this function
 func (s *Server) connectToPeers(peerAddrs []string) error {
 	for _, peerAddr := range peerAddrs {
 		if peerAddr == "" {
@@ -203,6 +278,8 @@ func (s *Server) connectToPeers(peerAddrs []string) error {
 			return fmt.Errorf("failed to connect to peer %s at %s: %v", peerID, peerAddr, err)
 		}
 		s.peers[peerID] = pb.NewRaftNodeClient(conn)
+		s.SentLength[peerID] = 0
+		s.AckedLength[peerID] = 0
 		s.logger.Infow("Connected to peer", "peer_id", peerID, "address", peerAddr)
 	}
 	return nil
