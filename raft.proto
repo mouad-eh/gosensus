@@ -20,6 +20,7 @@ message BroadcastResponse {
 }
 
 service RaftNode {
+  rpc Broadcast (BroadcastRequest) returns (BroadcastResponse) {}
   rpc RequestVote(VoteRequest) returns (google.protobuf.Empty) {}
   rpc HandleVoteResponse(VoteResponse) returns (google.protobuf.Empty) {}
   rpc RequestLog(LogRequest) returns (google.protobuf.Empty) {}

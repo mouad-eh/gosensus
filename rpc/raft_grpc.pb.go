@@ -122,6 +122,7 @@ var RaftClient_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
+	RaftNode_Broadcast_FullMethodName          = "/rpc.RaftNode/Broadcast"
 	RaftNode_RequestVote_FullMethodName        = "/rpc.RaftNode/RequestVote"
 	RaftNode_HandleVoteResponse_FullMethodName = "/rpc.RaftNode/HandleVoteResponse"
 	RaftNode_RequestLog_FullMethodName         = "/rpc.RaftNode/RequestLog"
@@ -132,6 +133,7 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type RaftNodeClient interface {
+	Broadcast(ctx context.Context, in *BroadcastRequest, opts ...grpc.CallOption) (*BroadcastResponse, error)
 	RequestVote(ctx context.Context, in *VoteRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	HandleVoteResponse(ctx context.Context, in *VoteResponse, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	RequestLog(ctx context.Context, in *LogRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
@@ -144,6 +146,16 @@ type raftNodeClient struct {
 
 func NewRaftNodeClient(cc grpc.ClientConnInterface) RaftNodeClient {
 	return &raftNodeClient{cc}
+}
+
+func (c *raftNodeClient) Broadcast(ctx context.Context, in *BroadcastRequest, opts ...grpc.CallOption) (*BroadcastResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BroadcastResponse)
+	err := c.cc.Invoke(ctx, RaftNode_Broadcast_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *raftNodeClient) RequestVote(ctx context.Context, in *VoteRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
@@ -190,6 +202,7 @@ func (c *raftNodeClient) HandleLogResponse(ctx context.Context, in *LogResponse,
 // All implementations must embed UnimplementedRaftNodeServer
 // for forward compatibility.
 type RaftNodeServer interface {
+	Broadcast(context.Context, *BroadcastRequest) (*BroadcastResponse, error)
 	RequestVote(context.Context, *VoteRequest) (*emptypb.Empty, error)
 	HandleVoteResponse(context.Context, *VoteResponse) (*emptypb.Empty, error)
 	RequestLog(context.Context, *LogRequest) (*emptypb.Empty, error)
@@ -204,6 +217,9 @@ type RaftNodeServer interface {
 // pointer dereference when methods are called.
 type UnimplementedRaftNodeServer struct{}
 
+func (UnimplementedRaftNodeServer) Broadcast(context.Context, *BroadcastRequest) (*BroadcastResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Broadcast not implemented")
+}
 func (UnimplementedRaftNodeServer) RequestVote(context.Context, *VoteRequest) (*emptypb.Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RequestVote not implemented")
 }
@@ -235,6 +251,24 @@ func RegisterRaftNodeServer(s grpc.ServiceRegistrar, srv RaftNodeServer) {
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&RaftNode_ServiceDesc, srv)
+}
+
+func _RaftNode_Broadcast_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BroadcastRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RaftNodeServer).Broadcast(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RaftNode_Broadcast_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RaftNodeServer).Broadcast(ctx, req.(*BroadcastRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _RaftNode_RequestVote_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -316,6 +350,10 @@ var RaftNode_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "rpc.RaftNode",
 	HandlerType: (*RaftNodeServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "Broadcast",
+			Handler:    _RaftNode_Broadcast_Handler,
+		},
 		{
 			MethodName: "RequestVote",
 			Handler:    _RaftNode_RequestVote_Handler,
