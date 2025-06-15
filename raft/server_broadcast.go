@@ -7,7 +7,7 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
-func (s *Server) Broadcast(ctx context.Context, req *pb.BroadcastRequest) (*pb.BroadcastResponse, error) {
+func (s *gRPCServer) Broadcast(ctx context.Context, req *pb.BroadcastRequest) (*pb.BroadcastResponse, error) {
 	s.logger.Infow("Received broadcast request", "message", req.GetMessage())
 	if s.CurrentRole == "leader" {
 		s.appendLog(LogEntry{
@@ -33,7 +33,7 @@ func (s *Server) Broadcast(ctx context.Context, req *pb.BroadcastRequest) (*pb.B
 	}, nil
 }
 
-func (s *Server) ReplicateLog(ctx context.Context, followerID string) error {
+func (s *gRPCServer) ReplicateLog(ctx context.Context, followerID string) error {
 	s.logger.Infow("Replicating log", "follower_id", followerID)
 	prefixLen := s.SentLength[followerID]
 	suffix := s.Log[prefixLen:]
@@ -68,7 +68,7 @@ func (s *Server) ReplicateLog(ctx context.Context, followerID string) error {
 	return nil
 }
 
-func (s *Server) RequestLog(ctx context.Context, req *pb.LogRequest) (*emptypb.Empty, error) {
+func (s *gRPCServer) RequestLog(ctx context.Context, req *pb.LogRequest) (*emptypb.Empty, error) {
 	s.logger.Infow("Received log request", "leader_id", req.LeaderId, "term", req.Term)
 
 	if req.Term > s.CurrentTerm {
@@ -113,7 +113,7 @@ func (s *Server) RequestLog(ctx context.Context, req *pb.LogRequest) (*emptypb.E
 	return &emptypb.Empty{}, nil
 }
 
-func (s *Server) AppendEntries(prefixLen int32, leaderCommitLength int32, suffix []*pb.LogEntry) error {
+func (s *gRPCServer) AppendEntries(prefixLen int32, leaderCommitLength int32, suffix []*pb.LogEntry) error {
 	s.logger.Infow("Appending entries", "prefix_len", prefixLen, "leader_commit_length", leaderCommitLength, "suffix", suffix)
 	if len(suffix) > 0 && len(s.Log) > int(prefixLen) {
 		index := min(len(s.Log), int(prefixLen)+len(suffix))
@@ -138,7 +138,7 @@ func (s *Server) AppendEntries(prefixLen int32, leaderCommitLength int32, suffix
 	return nil
 }
 
-func (s *Server) HandleLogResponse(ctx context.Context, resp *pb.LogResponse) (*emptypb.Empty, error) {
+func (s *gRPCServer) HandleLogResponse(ctx context.Context, resp *pb.LogResponse) (*emptypb.Empty, error) {
 	s.logger.Infow("Received log response", "follower_id", resp.FollowerId, "success", resp.Success, "term", resp.Term)
 	if resp.Term == s.CurrentTerm && s.CurrentRole == "leader" {
 		if resp.Success && resp.Ack > s.AckedLength[resp.FollowerId] {
@@ -158,7 +158,7 @@ func (s *Server) HandleLogResponse(ctx context.Context, resp *pb.LogResponse) (*
 	return &emptypb.Empty{}, nil
 }
 
-func (s *Server) acks(length int32) int {
+func (s *gRPCServer) acks(length int32) int {
 	cpt := 0
 	for node := range s.AckedLength {
 		if s.AckedLength[node] >= length {
@@ -169,7 +169,7 @@ func (s *Server) acks(length int32) int {
 }
 
 // Executed by leader only
-func (s *Server) CommitLogEntries() {
+func (s *gRPCServer) CommitLogEntries() {
 	numNodes := len(s.AckedLength)
 	minAcks := (numNodes + 1) / 2
 	ready := make(map[int]struct{})

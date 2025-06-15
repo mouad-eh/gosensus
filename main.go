@@ -3,10 +3,10 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 
-	_ "github.com/mattn/go-sqlite3"
 	raft "github.com/mouad-eh/gosensus/raft"
 )
 
@@ -26,20 +26,51 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Generate node address and ID
-	nodeAddr := fmt.Sprintf("%s:%d", *ipAddr, *nodePort)
-
-	// Parse peer addresses
-	peerAddrs := strings.Split(*peersStr, ",")
-	for i := range peerAddrs {
-		peerAddrs[i] = strings.TrimSpace(peerAddrs[i])
+	nodeIP := net.ParseIP(*ipAddr)
+	if nodeIP == nil {
+		fmt.Printf("Error: invalid IP address: %s\n", *ipAddr)
+		os.Exit(1)
 	}
 
-	// Start the server
-	server := raft.NewServer(nodeAddr, *leaderAddr)
-	err := server.Run(*clientPort, *nodePort, peerAddrs)
+	leaderIP, err := net.ResolveTCPAddr("tcp", *leaderAddr)
 	if err != nil {
-		fmt.Println("Error: ", err)
+		fmt.Printf("Error resolving leader address: %v\n", err)
+		os.Exit(1)
+	}
+
+	if *nodePort < 0 || *nodePort > 65535 {
+		fmt.Printf("Error: node port must be between 0 and 65535\n")
+		os.Exit(1)
+	}
+
+	if *clientPort < 0 || *clientPort > 65535 {
+		fmt.Printf("Error: client port must be between 0 and 65535\n")
+		os.Exit(1)
+	}
+
+	peers := make([]*net.TCPAddr, 0)
+	for _, addr := range strings.Split(*peersStr, ",") {
+		peerIP, err := net.ResolveTCPAddr("tcp", addr)
+		if err != nil {
+			fmt.Printf("Error resolving peer address: %v\n", err)
+			os.Exit(1)
+		}
+		peers = append(peers, peerIP)
+	}
+
+	// Create gRPC server configuration
+	config := &raft.GRPCServerConfig{
+		IP:         nodeIP,
+		NodePort:   *nodePort,
+		ClientPort: *clientPort,
+		Leader:     leaderIP,
+		Peers:      peers,
+	}
+
+	// Create and run the gRPC server
+	server := raft.NewgRPCServer(config)
+	if err := server.Run(); err != nil {
+		fmt.Printf("Error running server: %v\n", err)
 		os.Exit(1)
 	}
 }
