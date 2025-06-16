@@ -1,4 +1,4 @@
-package raft
+package persistence
 
 import (
 	"encoding/json"
@@ -7,14 +7,16 @@ import (
 	"path/filepath"
 )
 
-type Storage interface {
-	Init(nodeID string) error
-	SaveCurrentTerm(currentTerm int32) error
-	SaveVotedFor(votedFor string) error
-	SaveCommitLength(commitLength int32) error
-	AppendLog(entry LogEntry) error
-	TrimLog(lastIndex int32) error
-	LoadState() (currentTerm int32, votedFor string, commitLength int32, log []LogEntry, err error)
+type PersistentState struct {
+	CurrentTerm  int        `json:"current_term"`
+	VotedFor     string     `json:"voted_for"`
+	CommitLength int        `json:"commit_length"`
+	Log          []LogEntry `json:"log"`
+}
+
+type LogEntry struct {
+	Message string `json:"message"`
+	Term    int    `json:"term"`
 }
 
 type JSONStorage struct {
@@ -54,7 +56,7 @@ func (s *JSONStorage) saveState() error {
 	return nil
 }
 
-func (s *JSONStorage) LoadState() (currentTerm int32, votedFor string, commitLength int32, log []LogEntry, err error) {
+func (s *JSONStorage) LoadState() (currentTerm int, votedFor string, commitLength int, log []LogEntry, err error) {
 	file, err := os.OpenFile(s.filePath, os.O_RDONLY, 0644)
 	if err != nil {
 		return 0, "", 0, []LogEntry{}, fmt.Errorf("failed to open state file: %v", err)
@@ -66,7 +68,7 @@ func (s *JSONStorage) LoadState() (currentTerm int32, votedFor string, commitLen
 	return s.state.CurrentTerm, s.state.VotedFor, s.state.CommitLength, s.state.Log, nil
 }
 
-func (s *JSONStorage) SaveCurrentTerm(currentTerm int32) error {
+func (s *JSONStorage) SaveCurrentTerm(currentTerm int) error {
 	s.state.CurrentTerm = currentTerm
 	return s.saveState()
 }
@@ -76,7 +78,7 @@ func (s *JSONStorage) SaveVotedFor(votedFor string) error {
 	return s.saveState()
 }
 
-func (s *JSONStorage) SaveCommitLength(commitLength int32) error {
+func (s *JSONStorage) SaveCommitLength(commitLength int) error {
 	s.state.CommitLength = commitLength
 	return s.saveState()
 }
@@ -86,7 +88,7 @@ func (s *JSONStorage) AppendLog(entry LogEntry) error {
 	return s.saveState()
 }
 
-func (s *JSONStorage) TrimLog(startIndex int32) error {
+func (s *JSONStorage) TrimLog(startIndex int) error {
 	s.state.Log = s.state.Log[:startIndex]
 	return s.saveState()
 }

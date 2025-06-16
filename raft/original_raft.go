@@ -1,0 +1,305 @@
+package raft
+
+import (
+	"context"
+	"fmt"
+
+	persistence "github.com/mouad-eh/gosensus/raft/persistence"
+	"go.uber.org/zap"
+)
+
+type OriginalRaft struct {
+	nodeID string
+	peers  []string
+	// Persistent State
+	CurrentTerm  int
+	VotedFor     string
+	Log          []LogEntry
+	CommitLength int
+	// Volatile State
+	CurrentRole   string
+	CurrentLeader string
+	VotesReceived map[string]struct{}
+	SentLength    map[string]int
+	AckedLength   map[string]int
+	// Transport
+	transport Transport
+	// Storage
+	storage persistence.Storage
+	// Logger
+	logger *zap.SugaredLogger
+}
+
+func NewOriginalRaft(nodeID string, peers []string, transport Transport, storage persistence.Storage, logger *zap.SugaredLogger) *OriginalRaft {
+	return &OriginalRaft{
+		nodeID:    nodeID,
+		peers:     peers,
+		transport: transport,
+		storage:   storage,
+		logger:    logger,
+	}
+}
+
+func (raft *OriginalRaft) setCurrentTerm(term int) error {
+	raft.CurrentTerm = term
+	if err := raft.storage.SaveCurrentTerm(term); err != nil {
+		return fmt.Errorf("failed to save state after setting term: %w", err)
+	}
+	return nil
+}
+
+func (raft *OriginalRaft) setVotedFor(votedFor string) error {
+	raft.VotedFor = votedFor
+	if err := raft.storage.SaveVotedFor(votedFor); err != nil {
+		return fmt.Errorf("failed to save state after setting votedFor: %w", err)
+	}
+	return nil
+}
+
+func (raft *OriginalRaft) appendLog(entry LogEntry) error {
+	raft.Log = append(raft.Log, entry)
+	if err := raft.storage.AppendLog(persistence.LogEntry{
+		Message: entry.Message,
+		Term:    entry.Term,
+	}); err != nil {
+		return fmt.Errorf("failed to save state after appending log: %w", err)
+	}
+	return nil
+}
+
+func (raft *OriginalRaft) trimLog(startIndex int) error {
+	raft.Log = raft.Log[:startIndex]
+	if err := raft.storage.TrimLog(startIndex); err != nil {
+		return fmt.Errorf("failed to save state after trimming log: %w", err)
+	}
+	return nil
+}
+
+func (raft *OriginalRaft) setCommitLength(length int) error {
+	raft.CommitLength = length
+	if err := raft.storage.SaveCommitLength(length); err != nil {
+		return fmt.Errorf("failed to save state after setting commit length: %w", err)
+	}
+	return nil
+}
+
+func (raft *OriginalRaft) Init(ctx context.Context, role string) error {
+	if err := raft.storage.Init(raft.nodeID); err != nil {
+		return fmt.Errorf("failed to initialize storage: %w", err)
+	}
+	// load persistent state
+	currentTerm, votedFor, commitLength, log, err := raft.storage.LoadState()
+	raft.CurrentTerm = currentTerm
+	raft.VotedFor = votedFor
+	raft.CommitLength = commitLength
+	// Convert persistence.LogEntry to LogEntry
+	raft.Log = make([]LogEntry, len(log))
+	for i, entry := range log {
+		raft.Log[i] = LogEntry{
+			Message: entry.Message,
+			Term:    entry.Term,
+		}
+	}
+	// Initialize volatile state
+	raft.CurrentRole = role
+	raft.CurrentLeader = ""
+	raft.VotesReceived = make(map[string]struct{})
+	raft.SentLength = make(map[string]int)
+	raft.AckedLength = make(map[string]int)
+	if err != nil {
+		return fmt.Errorf("failed to load state from storage: %w", err)
+	}
+	return nil
+}
+
+func (raft *OriginalRaft) Broadcast(ctx context.Context, req *BroadcastRequest) (*BroadcastResponse, error) {
+	raft.logger.Infow("Received broadcast request", "message", req.Message)
+	if raft.CurrentRole == "leader" {
+		raft.appendLog(LogEntry{
+			Message: req.Message,
+			Term:    raft.CurrentTerm,
+		})
+		raft.AckedLength[raft.nodeID] = len(raft.Log)
+		for _, peerID := range raft.peers {
+			if err := raft.ReplicateLog(ctx, peerID); err != nil {
+				raft.logger.Errorw("Failed to replicate log", "error", err)
+			}
+		}
+	} else {
+		leaderID := raft.CurrentLeader
+		resp, err := raft.transport.SendBroadcastRequest(ctx, leaderID, req)
+		if err != nil {
+			raft.logger.Errorw("Failed to forward broadcast request to leader", "error", err)
+			return nil, fmt.Errorf("failed to forward broadcast request to leader: %w", err)
+		}
+		return resp, nil
+	}
+	// block until the message is delivered
+	raft.logger.Infow("Acknowledged broadcast request", "message", req.Message)
+	return &BroadcastResponse{
+		Success: true,
+		NodeId:  raft.nodeID,
+	}, nil
+}
+
+func (raft *OriginalRaft) ReplicateLog(ctx context.Context, followerID string) error {
+	raft.logger.Infow("Replicating log", "follower_id", followerID)
+	prefixLen := raft.SentLength[followerID]
+	suffix := raft.Log[prefixLen:]
+	prefixTerm := 0
+	if prefixLen > 0 {
+		prefixTerm = raft.Log[prefixLen-1].Term
+	}
+
+	// Convert suffix to LogEntry slice
+	logSuffix := make([]*LogEntry, len(suffix))
+	for i, entry := range suffix {
+		logSuffix[i] = &LogEntry{
+			Message: entry.Message,
+			Term:    entry.Term,
+		}
+	}
+
+	if err := raft.transport.SendLogRequest(ctx, followerID, &LogRequest{
+		LeaderId:     raft.nodeID,
+		Term:         raft.CurrentTerm,
+		PrefixLen:    prefixLen,
+		PrefixTerm:   prefixTerm,
+		CommitLength: raft.CommitLength,
+		Suffix:       logSuffix,
+	}); err != nil {
+		return fmt.Errorf("failed to send log request to follower %s: %w", followerID, err)
+	}
+	return nil
+}
+
+func (raft *OriginalRaft) RequestLog(ctx context.Context, req *LogRequest) error {
+	raft.logger.Infow("Received log request", "leader_id", req.LeaderId, "term", req.Term)
+
+	if req.Term > raft.CurrentTerm {
+		raft.setCurrentTerm(req.Term)
+		raft.setVotedFor("")
+		//TODO: cancel election timer
+	}
+	if req.Term == raft.CurrentTerm {
+		raft.CurrentRole = "follower"
+		raft.CurrentLeader = req.LeaderId
+	}
+	logOk := len(raft.Log) >= req.PrefixLen && (req.PrefixLen == 0 || raft.Log[req.PrefixLen-1].Term == req.PrefixTerm)
+	if req.Term == raft.CurrentTerm && logOk {
+		raft.AppendEntries(req.PrefixLen, req.CommitLength, req.Suffix)
+		ack := req.PrefixLen + len(req.Suffix)
+		if err := raft.transport.SendLogResponse(ctx, req.LeaderId, &LogResponse{
+			FollowerId: raft.nodeID,
+			Term:       raft.CurrentTerm,
+			Ack:        ack,
+			Success:    true,
+		}); err != nil {
+			return fmt.Errorf("failed to send successful log response to leader %s: %w", req.LeaderId, err)
+		}
+	} else {
+		if err := raft.transport.SendLogResponse(ctx, req.LeaderId, &LogResponse{
+			FollowerId: raft.nodeID,
+			Term:       raft.CurrentTerm,
+			Ack:        0,
+			Success:    false,
+		}); err != nil {
+			return fmt.Errorf("failed to send failed log response to leader %s: %w", req.LeaderId, err)
+		}
+	}
+	return nil
+}
+
+func (raft *OriginalRaft) AppendEntries(prefixLen int, leaderCommitLength int, suffix []*LogEntry) error {
+	raft.logger.Infow("Appending entries", "prefix_len", prefixLen, "leader_commit_length", leaderCommitLength, "suffix", suffix)
+	if len(suffix) > 0 && len(raft.Log) > prefixLen {
+		index := min(len(raft.Log), prefixLen+len(suffix))
+		if raft.Log[index].Term != suffix[index-prefixLen].Term {
+			raft.trimLog(prefixLen)
+		}
+	}
+	if prefixLen+len(suffix) > len(raft.Log) {
+		for i := len(raft.Log) - prefixLen; i < len(suffix); i++ {
+			raft.appendLog(LogEntry{
+				Message: suffix[i].Message,
+				Term:    suffix[i].Term,
+			})
+		}
+	}
+	if leaderCommitLength > raft.CommitLength {
+		for i := raft.CommitLength; i < leaderCommitLength; i++ {
+			raft.logger.Infow("Committing log", "index", i, "message", raft.Log[i].Message)
+		}
+		raft.setCommitLength(leaderCommitLength)
+	}
+	return nil
+}
+
+func (raft *OriginalRaft) HandleLogResponse(ctx context.Context, resp *LogResponse) error {
+	raft.logger.Infow("Received log response", "follower_id", resp.FollowerId, "success", resp.Success, "term", resp.Term)
+	if resp.Term == raft.CurrentTerm && raft.CurrentRole == "leader" {
+		if resp.Success && resp.Ack > raft.AckedLength[resp.FollowerId] {
+			raft.SentLength[resp.FollowerId] = resp.Ack
+			raft.AckedLength[resp.FollowerId] = resp.Ack
+			raft.CommitLogEntries()
+		} else if raft.SentLength[resp.FollowerId] > 0 {
+			raft.SentLength[resp.FollowerId] = raft.SentLength[resp.FollowerId] - 1
+			raft.ReplicateLog(ctx, resp.FollowerId)
+		}
+	} else if resp.Term > raft.CurrentTerm {
+		raft.setCurrentTerm(resp.Term)
+		raft.CurrentRole = "follower"
+		raft.setVotedFor("")
+		//TODO: cancel election timer
+	}
+	return nil
+}
+
+func (raft *OriginalRaft) acks(length int) int {
+	cpt := 0
+	for node := range raft.AckedLength {
+		if raft.AckedLength[node] >= length {
+			cpt++
+		}
+	}
+	return cpt
+}
+
+// Executed by leader only
+func (raft *OriginalRaft) CommitLogEntries() {
+	numNodes := len(raft.AckedLength)
+	minAcks := (numNodes + 1) / 2
+	ready := make(map[int]struct{})
+	for i := 1; i <= len(raft.Log); i++ {
+		if raft.acks(i) >= minAcks {
+			ready[i] = struct{}{}
+		}
+	}
+
+	var maxReady int
+	for k := range ready {
+		if k > maxReady {
+			maxReady = k
+		}
+	}
+
+	if len(ready) > 0 && maxReady > raft.CommitLength && raft.Log[maxReady-1].Term == raft.CurrentTerm {
+		for i := raft.CommitLength; i <= maxReady-1; i++ {
+			raft.logger.Infow("Delivering log", "index", i, "message", raft.Log[i].Message)
+			// send signal to hanging broadcast RPCs
+		}
+		raft.setCommitLength(maxReady)
+	}
+}
+
+func (raft *OriginalRaft) RequestVote(ctx context.Context, req *VoteRequest) error {
+	raft.logger.Infow("Received vote request", "candidate_id", req.CandidateId, "term", req.Term)
+	// TODO: implement
+	return nil
+}
+
+func (raft *OriginalRaft) HandleVoteResponse(ctx context.Context, resp *VoteResponse) error {
+	raft.logger.Infow("Received vote response", "voter_id", resp.VoterId, "granted", resp.Granted, "term", resp.Term)
+	// TODO: implement
+	return nil
+}
