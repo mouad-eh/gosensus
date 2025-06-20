@@ -28,6 +28,8 @@ type OriginalRaft struct {
 	storage persistence.Storage
 	// Logger
 	logger *zap.SugaredLogger
+	// Delivered log channel
+	delivered map[int]chan struct{}
 }
 
 func NewOriginalRaft(nodeID string, peers []string, transport Transport, storage persistence.Storage, logger *zap.SugaredLogger) *OriginalRaft {
@@ -37,6 +39,7 @@ func NewOriginalRaft(nodeID string, peers []string, transport Transport, storage
 		transport: transport,
 		storage:   storage,
 		logger:    logger,
+		delivered: make(map[int]chan struct{}),
 	}
 }
 
@@ -56,15 +59,15 @@ func (raft *OriginalRaft) setVotedFor(votedFor string) error {
 	return nil
 }
 
-func (raft *OriginalRaft) appendLog(entry LogEntry) error {
+func (raft *OriginalRaft) appendLog(entry LogEntry) (int, error) {
 	raft.Log = append(raft.Log, entry)
 	if err := raft.storage.AppendLog(persistence.LogEntry{
 		Message: entry.Message,
 		Term:    entry.Term,
 	}); err != nil {
-		return fmt.Errorf("failed to save state after appending log: %w", err)
+		return 0, fmt.Errorf("failed to save state after appending log: %w", err)
 	}
-	return nil
+	return len(raft.Log) - 1, nil
 }
 
 func (raft *OriginalRaft) trimLog(startIndex int) error {
@@ -116,16 +119,33 @@ func (raft *OriginalRaft) Init(ctx context.Context, role string) error {
 func (raft *OriginalRaft) Broadcast(ctx context.Context, req *BroadcastRequest) (*BroadcastResponse, error) {
 	raft.logger.Infow("Received broadcast request", "message", req.Message)
 	if raft.CurrentRole == "leader" {
-		raft.appendLog(LogEntry{
+		index, err := raft.appendLog(LogEntry{
 			Message: req.Message,
 			Term:    raft.CurrentTerm,
 		})
+		raft.delivered[index] = make(chan struct{})
+		if err != nil {
+			raft.logger.Errorw("Failed to append log", "error", err)
+			return nil, fmt.Errorf("failed to append log: %w", err)
+		}
 		raft.AckedLength[raft.nodeID] = len(raft.Log)
 		for _, peerID := range raft.peers {
 			if err := raft.ReplicateLog(ctx, peerID); err != nil {
 				raft.logger.Errorw("Failed to replicate log", "error", err)
 			}
 		}
+		// block until the message is delivered
+		select {
+		case <-raft.delivered[index]:
+			delete(raft.delivered, index)
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		raft.logger.Infow("Acknowledged broadcast request", "message", req.Message)
+		return &BroadcastResponse{
+			Success: true,
+			NodeId:  raft.nodeID,
+		}, nil
 	} else {
 		leaderID := raft.CurrentLeader
 		resp, err := raft.transport.SendBroadcastRequest(ctx, leaderID, req)
@@ -133,14 +153,9 @@ func (raft *OriginalRaft) Broadcast(ctx context.Context, req *BroadcastRequest) 
 			raft.logger.Errorw("Failed to forward broadcast request to leader", "error", err)
 			return nil, fmt.Errorf("failed to forward broadcast request to leader: %w", err)
 		}
+		raft.logger.Infow("Acknowledged broadcast request", "message", req.Message)
 		return resp, nil
 	}
-	// block until the message is delivered
-	raft.logger.Infow("Acknowledged broadcast request", "message", req.Message)
-	return &BroadcastResponse{
-		Success: true,
-		NodeId:  raft.nodeID,
-	}, nil
 }
 
 func (raft *OriginalRaft) ReplicateLog(ctx context.Context, followerID string) error {
@@ -282,6 +297,8 @@ func (raft *OriginalRaft) CommitLogEntries() {
 		for i := raft.CommitLength; i <= maxReady-1; i++ {
 			raft.logger.Infow("Delivering log", "index", i, "message", raft.Log[i].Message)
 			// send signal to hanging broadcast RPCs
+			raft.delivered[i] <- struct{}{}
+			close(raft.delivered[i])
 		}
 		raft.setCommitLength(maxReady)
 	}
