@@ -141,7 +141,6 @@ func (s *gRPCServer) startServers(clientPort, nodePort int) error {
 
 // Broadcast & Log replication
 func (s *gRPCServer) Broadcast(ctx context.Context, req *pb.BroadcastRequest) (*pb.BroadcastResponse, error) {
-	s.logger.Infow("Received broadcast request", "message", req.GetMessage())
 	response, err := s.raft.Broadcast(ctx, &BroadcastRequest{
 		Message: req.GetMessage(),
 	})
@@ -156,7 +155,6 @@ func (s *gRPCServer) Broadcast(ctx context.Context, req *pb.BroadcastRequest) (*
 }
 
 func (s *gRPCServer) RequestLog(ctx context.Context, req *pb.LogRequest) (*emptypb.Empty, error) {
-	s.logger.Infow("Received log request", "leader_id", req.LeaderId, "term", req.Term)
 	suffix := make([]*LogEntry, len(req.Suffix))
 	for i, entry := range req.Suffix {
 		suffix[i] = &LogEntry{
@@ -180,7 +178,6 @@ func (s *gRPCServer) RequestLog(ctx context.Context, req *pb.LogRequest) (*empty
 }
 
 func (s *gRPCServer) HandleLogResponse(ctx context.Context, resp *pb.LogResponse) (*emptypb.Empty, error) {
-	s.logger.Infow("Received log response", "follower_id", resp.FollowerId, "success", resp.Success, "term", resp.Term)
 	err := s.raft.HandleLogResponse(ctx, &LogResponse{
 		FollowerId: resp.FollowerId,
 		Term:       int(resp.Term),
@@ -196,7 +193,6 @@ func (s *gRPCServer) HandleLogResponse(ctx context.Context, resp *pb.LogResponse
 
 // Election
 func (s *gRPCServer) RequestVote(ctx context.Context, req *pb.VoteRequest) (*emptypb.Empty, error) {
-	s.logger.Infow("Received vote request", "candidate_id", req.CandidateId, "term", req.Term)
 	err := s.raft.RequestVote(ctx, &VoteRequest{
 		CandidateId: req.CandidateId,
 		Term:        int(req.Term),
@@ -211,7 +207,6 @@ func (s *gRPCServer) RequestVote(ctx context.Context, req *pb.VoteRequest) (*emp
 }
 
 func (s *gRPCServer) HandleVoteResponse(ctx context.Context, resp *pb.VoteResponse) (*emptypb.Empty, error) {
-	s.logger.Infow("Received vote response", "voter_id", resp.VoterId, "granted", resp.Granted, "term", resp.Term)
 	err := s.raft.HandleVoteResponse(ctx, &VoteResponse{
 		VoterId: resp.VoterId,
 		Term:    int(resp.Term),
@@ -226,46 +221,23 @@ func (s *gRPCServer) HandleVoteResponse(ctx context.Context, resp *pb.VoteRespon
 
 // Transport interface implementation
 func (s *gRPCServer) SendBroadcastRequest(ctx context.Context, nodeID string, req *BroadcastRequest) (*BroadcastResponse, error) {
-	peer, ok := s.peers[nodeID]
-	if !ok {
-		return nil, fmt.Errorf("peer %s not found", nodeID)
-	}
+	peer := s.peers[nodeID]
 
-	type result struct {
-		resp *BroadcastResponse
-		err  error
+	resp, err := peer.Broadcast(ctx, &pb.BroadcastRequest{
+		Message: req.Message,
+	})
+	if err != nil {
+		s.logger.Errorw("Failed to send broadcast request", "error", err)
+		return nil, err
 	}
-	ch := make(chan result, 1)
-
-	go func() {
-		resp, err := peer.Broadcast(ctx, &pb.BroadcastRequest{
-			Message: req.Message,
-		})
-		if err != nil {
-			ch <- result{nil, fmt.Errorf("failed to send broadcast request to peer %s: %w", nodeID, err)}
-			return
-		}
-		ch <- result{&BroadcastResponse{
-			Success: resp.Success,
-			NodeId:  resp.NodeId,
-		}, nil}
-	}()
-
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case r := <-ch:
-		return r.resp, r.err
-	}
+	return &BroadcastResponse{
+		Success: resp.Success,
+		NodeId:  resp.NodeId,
+	}, nil
 }
 
-func (s *gRPCServer) SendLogRequest(ctx context.Context, nodeID string, req *LogRequest) error {
-	peer, ok := s.peers[nodeID]
-	if !ok {
-		return fmt.Errorf("peer %s not found", nodeID)
-	}
-
-	ch := make(chan error, 1)
+func (s *gRPCServer) SendLogRequest(nodeID string, req *LogRequest) {
+	peer := s.peers[nodeID]
 
 	go func() {
 		suffix := make([]*pb.LogEntry, len(req.Suffix))
@@ -275,7 +247,7 @@ func (s *gRPCServer) SendLogRequest(ctx context.Context, nodeID string, req *Log
 				Term:    int32(entry.Term),
 			}
 		}
-
+		ctx := context.Background()
 		_, err := peer.RequestLog(ctx, &pb.LogRequest{
 			LeaderId:     req.LeaderId,
 			Term:         int32(req.Term),
@@ -285,29 +257,16 @@ func (s *gRPCServer) SendLogRequest(ctx context.Context, nodeID string, req *Log
 			Suffix:       suffix,
 		})
 		if err != nil {
-			ch <- fmt.Errorf("failed to send log request to peer %s: %w", nodeID, err)
-			return
+			s.logger.Errorw("Failed to send log request", "error", err)
 		}
-		ch <- nil
 	}()
-
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case err := <-ch:
-		return err
-	}
 }
 
-func (s *gRPCServer) SendLogResponse(ctx context.Context, nodeID string, req *LogResponse) error {
-	peer, ok := s.peers[nodeID]
-	if !ok {
-		return fmt.Errorf("peer %s not found", nodeID)
-	}
-
-	ch := make(chan error, 1)
+func (s *gRPCServer) SendLogResponse(nodeID string, req *LogResponse) {
+	peer := s.peers[nodeID]
 
 	go func() {
+		ctx := context.Background()
 		_, err := peer.HandleLogResponse(ctx, &pb.LogResponse{
 			FollowerId: req.FollowerId,
 			Term:       int32(req.Term),
@@ -315,29 +274,16 @@ func (s *gRPCServer) SendLogResponse(ctx context.Context, nodeID string, req *Lo
 			Success:    req.Success,
 		})
 		if err != nil {
-			ch <- fmt.Errorf("failed to send log response to peer %s: %w", nodeID, err)
-			return
+			s.logger.Errorw("Failed to send log response", "error", err)
 		}
-		ch <- nil
 	}()
-
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case err := <-ch:
-		return err
-	}
 }
 
-func (s *gRPCServer) SendVoteRequest(ctx context.Context, nodeID string, req *VoteRequest) error {
-	peer, ok := s.peers[nodeID]
-	if !ok {
-		return fmt.Errorf("peer %s not found", nodeID)
-	}
-
-	ch := make(chan error, 1)
+func (s *gRPCServer) SendVoteRequest(nodeID string, req *VoteRequest) {
+	peer := s.peers[nodeID]
 
 	go func() {
+		ctx := context.Background()
 		_, err := peer.RequestVote(ctx, &pb.VoteRequest{
 			CandidateId: req.CandidateId,
 			Term:        int32(req.Term),
@@ -345,45 +291,23 @@ func (s *gRPCServer) SendVoteRequest(ctx context.Context, nodeID string, req *Vo
 			LogTerm:     int32(req.LogTerm),
 		})
 		if err != nil {
-			ch <- fmt.Errorf("failed to send vote request to peer %s: %w", nodeID, err)
-			return
+			s.logger.Errorw("Failed to send vote request", "error", err)
 		}
-		ch <- nil
 	}()
-
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case err := <-ch:
-		return err
-	}
 }
 
-func (s *gRPCServer) SendVoteResponse(ctx context.Context, nodeID string, req *VoteResponse) error {
-	peer, ok := s.peers[nodeID]
-	if !ok {
-		return fmt.Errorf("peer %s not found", nodeID)
-	}
-
-	ch := make(chan error, 1)
+func (s *gRPCServer) SendVoteResponse(nodeID string, req *VoteResponse) {
+	peer := s.peers[nodeID]
 
 	go func() {
+		ctx := context.Background()
 		_, err := peer.HandleVoteResponse(ctx, &pb.VoteResponse{
 			VoterId: req.VoterId,
 			Term:    int32(req.Term),
 			Granted: req.Granted,
 		})
 		if err != nil {
-			ch <- fmt.Errorf("failed to send vote response to peer %s: %w", nodeID, err)
-			return
+			s.logger.Errorw("Failed to send vote response", "error", err)
 		}
-		ch <- nil
 	}()
-
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case err := <-ch:
-		return err
-	}
 }

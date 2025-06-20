@@ -76,6 +76,7 @@ func (raft *OriginalRaft) trimLog(startIndex int) error {
 }
 
 func (raft *OriginalRaft) setCommitLength(length int) error {
+	raft.logger.Infow("Setting commit length", "length", length)
 	raft.CommitLength = length
 	if err := raft.storage.SaveCommitLength(length); err != nil {
 		return fmt.Errorf("failed to save state after setting commit length: %w", err)
@@ -160,16 +161,14 @@ func (raft *OriginalRaft) ReplicateLog(ctx context.Context, followerID string) e
 		}
 	}
 
-	if err := raft.transport.SendLogRequest(ctx, followerID, &LogRequest{
+	raft.transport.SendLogRequest(followerID, &LogRequest{
 		LeaderId:     raft.nodeID,
 		Term:         raft.CurrentTerm,
 		PrefixLen:    prefixLen,
 		PrefixTerm:   prefixTerm,
 		CommitLength: raft.CommitLength,
 		Suffix:       logSuffix,
-	}); err != nil {
-		return fmt.Errorf("failed to send log request to follower %s: %w", followerID, err)
-	}
+	})
 	return nil
 }
 
@@ -189,23 +188,19 @@ func (raft *OriginalRaft) RequestLog(ctx context.Context, req *LogRequest) error
 	if req.Term == raft.CurrentTerm && logOk {
 		raft.AppendEntries(req.PrefixLen, req.CommitLength, req.Suffix)
 		ack := req.PrefixLen + len(req.Suffix)
-		if err := raft.transport.SendLogResponse(ctx, req.LeaderId, &LogResponse{
+		raft.transport.SendLogResponse(req.LeaderId, &LogResponse{
 			FollowerId: raft.nodeID,
 			Term:       raft.CurrentTerm,
 			Ack:        ack,
 			Success:    true,
-		}); err != nil {
-			return fmt.Errorf("failed to send successful log response to leader %s: %w", req.LeaderId, err)
-		}
+		})
 	} else {
-		if err := raft.transport.SendLogResponse(ctx, req.LeaderId, &LogResponse{
+		raft.transport.SendLogResponse(req.LeaderId, &LogResponse{
 			FollowerId: raft.nodeID,
 			Term:       raft.CurrentTerm,
 			Ack:        0,
 			Success:    false,
-		}); err != nil {
-			return fmt.Errorf("failed to send failed log response to leader %s: %w", req.LeaderId, err)
-		}
+		})
 	}
 	return nil
 }
