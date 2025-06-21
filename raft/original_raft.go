@@ -123,16 +123,13 @@ func (raft *OriginalRaft) Broadcast(ctx context.Context, req *BroadcastRequest) 
 			Message: req.Message,
 			Term:    raft.CurrentTerm,
 		})
-		raft.delivered[index] = make(chan struct{})
 		if err != nil {
-			raft.logger.Errorw("Failed to append log", "error", err)
 			return nil, fmt.Errorf("failed to append log: %w", err)
 		}
 		raft.AckedLength[raft.nodeID] = len(raft.Log)
+		raft.delivered[index] = make(chan struct{})
 		for _, peerID := range raft.peers {
-			if err := raft.ReplicateLog(ctx, peerID); err != nil {
-				raft.logger.Errorw("Failed to replicate log", "error", err)
-			}
+			raft.ReplicateLog(ctx, peerID)
 		}
 		// block until the message is delivered
 		select {
@@ -158,7 +155,7 @@ func (raft *OriginalRaft) Broadcast(ctx context.Context, req *BroadcastRequest) 
 	}
 }
 
-func (raft *OriginalRaft) ReplicateLog(ctx context.Context, followerID string) error {
+func (raft *OriginalRaft) ReplicateLog(ctx context.Context, followerID string) {
 	raft.logger.Infow("Replicating log", "follower_id", followerID)
 	prefixLen := raft.SentLength[followerID]
 	suffix := raft.Log[prefixLen:]
@@ -184,15 +181,20 @@ func (raft *OriginalRaft) ReplicateLog(ctx context.Context, followerID string) e
 		CommitLength: raft.CommitLength,
 		Suffix:       logSuffix,
 	})
-	return nil
 }
 
 func (raft *OriginalRaft) RequestLog(ctx context.Context, req *LogRequest) error {
 	raft.logger.Infow("Received log request", "leader_id", req.LeaderId, "term", req.Term)
 
 	if req.Term > raft.CurrentTerm {
-		raft.setCurrentTerm(req.Term)
-		raft.setVotedFor("")
+		err := raft.setCurrentTerm(req.Term)
+		if err != nil {
+			return fmt.Errorf("failed to set current term: %w", err)
+		}
+		err = raft.setVotedFor("")
+		if err != nil {
+			return fmt.Errorf("failed to set voted for: %w", err)
+		}
 		//TODO: cancel election timer
 	}
 	if req.Term == raft.CurrentTerm {
@@ -201,7 +203,10 @@ func (raft *OriginalRaft) RequestLog(ctx context.Context, req *LogRequest) error
 	}
 	logOk := len(raft.Log) >= req.PrefixLen && (req.PrefixLen == 0 || raft.Log[req.PrefixLen-1].Term == req.PrefixTerm)
 	if req.Term == raft.CurrentTerm && logOk {
-		raft.AppendEntries(req.PrefixLen, req.CommitLength, req.Suffix)
+		err := raft.AppendEntries(req.PrefixLen, req.CommitLength, req.Suffix)
+		if err != nil {
+			return fmt.Errorf("failed to append entries: %w", err)
+		}
 		ack := req.PrefixLen + len(req.Suffix)
 		raft.transport.SendLogResponse(req.LeaderId, &LogResponse{
 			FollowerId: raft.nodeID,
@@ -225,22 +230,31 @@ func (raft *OriginalRaft) AppendEntries(prefixLen int, leaderCommitLength int, s
 	if len(suffix) > 0 && len(raft.Log) > prefixLen {
 		index := min(len(raft.Log), prefixLen+len(suffix))
 		if raft.Log[index].Term != suffix[index-prefixLen].Term {
-			raft.trimLog(prefixLen)
+			err := raft.trimLog(prefixLen)
+			if err != nil {
+				return fmt.Errorf("failed to trim log: %w", err)
+			}
 		}
 	}
 	if prefixLen+len(suffix) > len(raft.Log) {
 		for i := len(raft.Log) - prefixLen; i < len(suffix); i++ {
-			raft.appendLog(LogEntry{
+			_, err := raft.appendLog(LogEntry{
 				Message: suffix[i].Message,
 				Term:    suffix[i].Term,
 			})
+			if err != nil {
+				return fmt.Errorf("failed to append log: %w", err)
+			}
 		}
 	}
 	if leaderCommitLength > raft.CommitLength {
 		for i := raft.CommitLength; i < leaderCommitLength; i++ {
 			raft.logger.Infow("Committing log", "index", i, "message", raft.Log[i].Message)
 		}
-		raft.setCommitLength(leaderCommitLength)
+		err := raft.setCommitLength(leaderCommitLength)
+		if err != nil {
+			return fmt.Errorf("failed to set commit length: %w", err)
+		}
 	}
 	return nil
 }
@@ -251,15 +265,24 @@ func (raft *OriginalRaft) HandleLogResponse(ctx context.Context, resp *LogRespon
 		if resp.Success && resp.Ack > raft.AckedLength[resp.FollowerId] {
 			raft.SentLength[resp.FollowerId] = resp.Ack
 			raft.AckedLength[resp.FollowerId] = resp.Ack
-			raft.CommitLogEntries()
+			err := raft.CommitLogEntries()
+			if err != nil {
+				return fmt.Errorf("failed to commit log entries: %w", err)
+			}
 		} else if raft.SentLength[resp.FollowerId] > 0 {
 			raft.SentLength[resp.FollowerId] = raft.SentLength[resp.FollowerId] - 1
 			raft.ReplicateLog(ctx, resp.FollowerId)
 		}
 	} else if resp.Term > raft.CurrentTerm {
-		raft.setCurrentTerm(resp.Term)
+		err := raft.setCurrentTerm(resp.Term)
+		if err != nil {
+			return fmt.Errorf("failed to set current term: %w", err)
+		}
+		err = raft.setVotedFor("")
+		if err != nil {
+			return fmt.Errorf("failed to set voted for: %w", err)
+		}
 		raft.CurrentRole = "follower"
-		raft.setVotedFor("")
 		//TODO: cancel election timer
 	}
 	return nil
@@ -276,7 +299,7 @@ func (raft *OriginalRaft) acks(length int) int {
 }
 
 // Executed by leader only
-func (raft *OriginalRaft) CommitLogEntries() {
+func (raft *OriginalRaft) CommitLogEntries() error {
 	numNodes := len(raft.AckedLength)
 	minAcks := (numNodes + 1) / 2
 	ready := make(map[int]struct{})
@@ -300,8 +323,12 @@ func (raft *OriginalRaft) CommitLogEntries() {
 			raft.delivered[i] <- struct{}{}
 			close(raft.delivered[i])
 		}
-		raft.setCommitLength(maxReady)
+		err := raft.setCommitLength(maxReady)
+		if err != nil {
+			return fmt.Errorf("failed to set commit length: %w", err)
+		}
 	}
+	return nil
 }
 
 func (raft *OriginalRaft) RequestVote(ctx context.Context, req *VoteRequest) error {
