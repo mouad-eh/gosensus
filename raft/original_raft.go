@@ -3,6 +3,7 @@ package raft
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	persistence "github.com/mouad-eh/gosensus/raft/persistence"
 	"go.uber.org/zap"
@@ -30,6 +31,8 @@ type OriginalRaft struct {
 	logger *zap.SugaredLogger
 	// Delivered log channel
 	delivered map[int]chan struct{}
+	// Mutex for thread safety
+	mu sync.RWMutex
 }
 
 func NewOriginalRaft(nodeID string, peers []string, transport Transport, storage persistence.Storage, logger *zap.SugaredLogger) *OriginalRaft {
@@ -93,6 +96,9 @@ func (raft *OriginalRaft) Init(ctx context.Context, role string) error {
 	}
 	// load persistent state
 	currentTerm, votedFor, commitLength, log, err := raft.storage.LoadState()
+	if err != nil {
+		return fmt.Errorf("failed to load state from storage: %w", err)
+	}
 	raft.CurrentTerm = currentTerm
 	raft.VotedFor = votedFor
 	raft.CommitLength = commitLength
@@ -110,9 +116,6 @@ func (raft *OriginalRaft) Init(ctx context.Context, role string) error {
 	raft.VotesReceived = make(map[string]struct{})
 	raft.SentLength = make(map[string]int)
 	raft.AckedLength = make(map[string]int)
-	if err != nil {
-		return fmt.Errorf("failed to load state from storage: %w", err)
-	}
 	return nil
 }
 
@@ -260,7 +263,7 @@ func (raft *OriginalRaft) AppendEntries(prefixLen int, leaderCommitLength int, s
 }
 
 func (raft *OriginalRaft) HandleLogResponse(ctx context.Context, resp *LogResponse) error {
-	raft.logger.Infow("Received log response", "follower_id", resp.FollowerId, "success", resp.Success, "term", resp.Term)
+	raft.logger.Infow("Received log response", "follower_id", resp.FollowerId, "success", resp.Success, "term", resp.Term, "ack", resp.Ack)
 	if resp.Term == raft.CurrentTerm && raft.CurrentRole == "leader" {
 		if resp.Success && resp.Ack > raft.AckedLength[resp.FollowerId] {
 			raft.SentLength[resp.FollowerId] = resp.Ack
@@ -300,6 +303,7 @@ func (raft *OriginalRaft) acks(length int) int {
 
 // Executed by leader only
 func (raft *OriginalRaft) CommitLogEntries() error {
+	raft.logger.Infow("Committing log entries")
 	numNodes := len(raft.AckedLength)
 	minAcks := (numNodes + 1) / 2
 	ready := make(map[int]struct{})
@@ -316,7 +320,10 @@ func (raft *OriginalRaft) CommitLogEntries() error {
 		}
 	}
 
+	raft.mu.Lock()
+	defer raft.mu.Unlock()
 	if len(ready) > 0 && maxReady > raft.CommitLength && raft.Log[maxReady-1].Term == raft.CurrentTerm {
+
 		for i := raft.CommitLength; i <= maxReady-1; i++ {
 			raft.logger.Infow("Delivering log", "index", i, "message", raft.Log[i].Message)
 			// send signal to hanging broadcast RPCs
