@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	persistence "github.com/mouad-eh/gosensus/raft/persistence"
 	"go.uber.org/zap"
@@ -90,7 +91,7 @@ func (raft *OriginalRaft) setCommitLength(length int) error {
 	return nil
 }
 
-func (raft *OriginalRaft) Init(ctx context.Context, role string) error {
+func (raft *OriginalRaft) Init(role string) error {
 	if err := raft.storage.Init(raft.nodeID); err != nil {
 		return fmt.Errorf("failed to initialize storage: %w", err)
 	}
@@ -116,7 +117,22 @@ func (raft *OriginalRaft) Init(ctx context.Context, role string) error {
 	raft.VotesReceived = make(map[string]struct{})
 	raft.SentLength = make(map[string]int)
 	raft.AckedLength = make(map[string]int)
+	// Start periodic replication
+	ticker := time.NewTicker(10 * time.Second)
+	go raft.PeriodicReplicateLog(ticker.C)
 	return nil
+}
+
+func (raft *OriginalRaft) PeriodicReplicateLog(ch <-chan time.Time) {
+	for {
+		<-ch
+		raft.logger.Infow("Periodic log replication")
+		if raft.CurrentRole == "leader" {
+			for _, peerID := range raft.peers {
+				raft.ReplicateLog(peerID)
+			}
+		}
+	}
 }
 
 func (raft *OriginalRaft) Broadcast(ctx context.Context, req *BroadcastRequest) (*BroadcastResponse, error) {
@@ -132,7 +148,7 @@ func (raft *OriginalRaft) Broadcast(ctx context.Context, req *BroadcastRequest) 
 		raft.AckedLength[raft.nodeID] = len(raft.Log)
 		raft.delivered[index] = make(chan struct{})
 		for _, peerID := range raft.peers {
-			raft.ReplicateLog(ctx, peerID)
+			raft.ReplicateLog(peerID)
 		}
 		// block until the message is delivered
 		select {
@@ -158,7 +174,7 @@ func (raft *OriginalRaft) Broadcast(ctx context.Context, req *BroadcastRequest) 
 	}
 }
 
-func (raft *OriginalRaft) ReplicateLog(ctx context.Context, followerID string) {
+func (raft *OriginalRaft) ReplicateLog(followerID string) {
 	raft.logger.Infow("Replicating log", "follower_id", followerID)
 	prefixLen := raft.SentLength[followerID]
 	suffix := raft.Log[prefixLen:]
@@ -186,7 +202,7 @@ func (raft *OriginalRaft) ReplicateLog(ctx context.Context, followerID string) {
 	})
 }
 
-func (raft *OriginalRaft) RequestLog(ctx context.Context, req *LogRequest) error {
+func (raft *OriginalRaft) RequestLog(req *LogRequest) error {
 	raft.logger.Infow("Received log request", "leader_id", req.LeaderId, "term", req.Term)
 
 	if req.Term > raft.CurrentTerm {
@@ -262,10 +278,10 @@ func (raft *OriginalRaft) AppendEntries(prefixLen int, leaderCommitLength int, s
 	return nil
 }
 
-func (raft *OriginalRaft) HandleLogResponse(ctx context.Context, resp *LogResponse) error {
+func (raft *OriginalRaft) HandleLogResponse(resp *LogResponse) error {
 	raft.logger.Infow("Received log response", "follower_id", resp.FollowerId, "success", resp.Success, "term", resp.Term, "ack", resp.Ack)
 	if resp.Term == raft.CurrentTerm && raft.CurrentRole == "leader" {
-		if resp.Success && resp.Ack > raft.AckedLength[resp.FollowerId] {
+		if resp.Success && resp.Ack >= raft.AckedLength[resp.FollowerId] {
 			raft.SentLength[resp.FollowerId] = resp.Ack
 			raft.AckedLength[resp.FollowerId] = resp.Ack
 			err := raft.CommitLogEntries()
@@ -274,7 +290,7 @@ func (raft *OriginalRaft) HandleLogResponse(ctx context.Context, resp *LogRespon
 			}
 		} else if raft.SentLength[resp.FollowerId] > 0 {
 			raft.SentLength[resp.FollowerId] = raft.SentLength[resp.FollowerId] - 1
-			raft.ReplicateLog(ctx, resp.FollowerId)
+			raft.ReplicateLog(resp.FollowerId)
 		}
 	} else if resp.Term > raft.CurrentTerm {
 		err := raft.setCurrentTerm(resp.Term)
@@ -339,13 +355,13 @@ func (raft *OriginalRaft) CommitLogEntries() error {
 	return nil
 }
 
-func (raft *OriginalRaft) RequestVote(ctx context.Context, req *VoteRequest) error {
+func (raft *OriginalRaft) RequestVote(req *VoteRequest) error {
 	raft.logger.Infow("Received vote request", "candidate_id", req.CandidateId, "term", req.Term)
 	// TODO: implement
 	return nil
 }
 
-func (raft *OriginalRaft) HandleVoteResponse(ctx context.Context, resp *VoteResponse) error {
+func (raft *OriginalRaft) HandleVoteResponse(resp *VoteResponse) error {
 	raft.logger.Infow("Received vote response", "voter_id", resp.VoterId, "granted", resp.Granted, "term", resp.Term)
 	// TODO: implement
 	return nil

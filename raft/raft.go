@@ -5,12 +5,12 @@ import (
 )
 
 type Raft interface {
-	Init(ctx context.Context, role string) error
+	Init(role string) error
 	Broadcast(ctx context.Context, req *BroadcastRequest) (*BroadcastResponse, error)
-	RequestVote(ctx context.Context, req *VoteRequest) error
-	HandleVoteResponse(ctx context.Context, req *VoteResponse) error
-	RequestLog(ctx context.Context, req *LogRequest) error
-	HandleLogResponse(ctx context.Context, req *LogResponse) error
+	RequestVote(req *VoteRequest) error
+	HandleVoteResponse(req *VoteResponse) error
+	RequestLog(req *LogRequest) error
+	HandleLogResponse(req *LogResponse) error
 }
 
 type BroadcastRequest struct {

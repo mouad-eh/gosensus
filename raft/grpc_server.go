@@ -63,7 +63,7 @@ func (s *gRPCServer) Run() error {
 		role = "leader"
 	}
 	// Initialize raft
-	if err := s.raft.Init(context.Background(), role); err != nil {
+	if err := s.raft.Init(role); err != nil {
 		return fmt.Errorf("failed to initialize raft: %v", err)
 	}
 	// Connect to all peers
@@ -162,7 +162,7 @@ func (s *gRPCServer) RequestLog(ctx context.Context, req *pb.LogRequest) (*empty
 			Term:    int(entry.Term),
 		}
 	}
-	err := s.raft.RequestLog(ctx, &LogRequest{
+	err := s.raft.RequestLog(&LogRequest{
 		LeaderId:     req.LeaderId,
 		Term:         int(req.Term),
 		PrefixLen:    int(req.PrefixLen),
@@ -178,7 +178,7 @@ func (s *gRPCServer) RequestLog(ctx context.Context, req *pb.LogRequest) (*empty
 }
 
 func (s *gRPCServer) HandleLogResponse(ctx context.Context, resp *pb.LogResponse) (*emptypb.Empty, error) {
-	err := s.raft.HandleLogResponse(ctx, &LogResponse{
+	err := s.raft.HandleLogResponse(&LogResponse{
 		FollowerId: resp.FollowerId,
 		Term:       int(resp.Term),
 		Ack:        int(resp.Ack),
@@ -193,7 +193,7 @@ func (s *gRPCServer) HandleLogResponse(ctx context.Context, resp *pb.LogResponse
 
 // Election
 func (s *gRPCServer) RequestVote(ctx context.Context, req *pb.VoteRequest) (*emptypb.Empty, error) {
-	err := s.raft.RequestVote(ctx, &VoteRequest{
+	err := s.raft.RequestVote(&VoteRequest{
 		CandidateId: req.CandidateId,
 		Term:        int(req.Term),
 		LogLength:   int(req.LogLength),
@@ -207,7 +207,7 @@ func (s *gRPCServer) RequestVote(ctx context.Context, req *pb.VoteRequest) (*emp
 }
 
 func (s *gRPCServer) HandleVoteResponse(ctx context.Context, resp *pb.VoteResponse) (*emptypb.Empty, error) {
-	err := s.raft.HandleVoteResponse(ctx, &VoteResponse{
+	err := s.raft.HandleVoteResponse(&VoteResponse{
 		VoterId: resp.VoterId,
 		Term:    int(resp.Term),
 		Granted: resp.Granted,
