@@ -252,7 +252,7 @@ func (raft *OriginalRaft) AppendEntries(prefixLen int, leaderCommitLength int, s
 	}
 	if leaderCommitLength > raft.CommitLength {
 		for i := raft.CommitLength; i < leaderCommitLength; i++ {
-			raft.logger.Infow("Committing log", "index", i, "message", raft.Log[i].Message)
+			raft.logger.Infow("Delivering log", "index", i, "message", raft.Log[i].Message)
 		}
 		err := raft.setCommitLength(leaderCommitLength)
 		if err != nil {
@@ -306,20 +306,21 @@ func (raft *OriginalRaft) CommitLogEntries() error {
 	raft.logger.Infow("Committing log entries")
 	numNodes := len(raft.AckedLength)
 	minAcks := (numNodes + 1) / 2
-	ready := make(map[int]struct{})
+	ready := make([]int, 0)
 	for i := 1; i <= len(raft.Log); i++ {
 		if raft.acks(i) >= minAcks {
-			ready[i] = struct{}{}
+			ready = append(ready, i)
 		}
 	}
 
 	var maxReady int
-	for k := range ready {
+	for _, k := range ready {
 		if k > maxReady {
 			maxReady = k
 		}
 	}
 
+	// The lock is used to make the read and the write to raft.CommitLength below atomic
 	raft.mu.Lock()
 	defer raft.mu.Unlock()
 	if len(ready) > 0 && maxReady > raft.CommitLength && raft.Log[maxReady-1].Term == raft.CurrentTerm {
