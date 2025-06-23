@@ -3,6 +3,7 @@ package raft
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -34,16 +35,23 @@ type OriginalRaft struct {
 	delivered map[int]chan struct{}
 	// Mutex for thread safety
 	mu sync.RWMutex
+	// Heartbeat timer
+	heartbeatTimer *time.Timer
+	// Election timer
+	electionTimer *time.Timer
+	// Election timer cancel function
+	electionTimerCancel context.CancelFunc
 }
 
 func NewOriginalRaft(nodeID string, peers []string, transport Transport, storage persistence.Storage, logger *zap.SugaredLogger) *OriginalRaft {
 	return &OriginalRaft{
-		nodeID:    nodeID,
-		peers:     peers,
-		transport: transport,
-		storage:   storage,
-		logger:    logger,
-		delivered: make(map[int]chan struct{}),
+		nodeID:         nodeID,
+		peers:          peers,
+		transport:      transport,
+		storage:        storage,
+		logger:         logger,
+		delivered:      make(map[int]chan struct{}),
+		heartbeatTimer: time.NewTimer(time.Duration(25+rand.Intn(20)) * time.Second),
 	}
 }
 
@@ -120,14 +128,29 @@ func (raft *OriginalRaft) Init(role string) error {
 	// Start periodic replication
 	ticker := time.NewTicker(10 * time.Second)
 	go raft.PeriodicReplicateLog(ticker.C)
+	// Start heartbeat timer
+	go raft.CheckLeaderFailure()
+
+	return nil
+}
+
+func (raft *OriginalRaft) CheckLeaderFailure() error {
+	<-raft.heartbeatTimer.C
+	if raft.CurrentRole == "follower" {
+		raft.logger.Infow("Heartbeat timeout")
+		err := raft.StartElection()
+		if err != nil {
+			return fmt.Errorf("failed to start election: %w", err)
+		}
+	}
 	return nil
 }
 
 func (raft *OriginalRaft) PeriodicReplicateLog(ch <-chan time.Time) {
 	for {
 		<-ch
-		raft.logger.Infow("Periodic log replication")
 		if raft.CurrentRole == "leader" {
+			raft.logger.Infow("Periodic log replication by leader")
 			for _, peerID := range raft.peers {
 				raft.ReplicateLog(peerID)
 			}
@@ -204,7 +227,7 @@ func (raft *OriginalRaft) ReplicateLog(followerID string) {
 
 func (raft *OriginalRaft) RequestLog(req *LogRequest) error {
 	raft.logger.Infow("Received log request", "leader_id", req.LeaderId, "term", req.Term)
-
+	raft.heartbeatTimer.Reset(time.Duration(25+rand.Intn(10)) * time.Second)
 	if req.Term > raft.CurrentTerm {
 		err := raft.setCurrentTerm(req.Term)
 		if err != nil {
@@ -214,9 +237,12 @@ func (raft *OriginalRaft) RequestLog(req *LogRequest) error {
 		if err != nil {
 			return fmt.Errorf("failed to set voted for: %w", err)
 		}
-		//TODO: cancel election timer
+		raft.electionTimerCancel()
 	}
 	if req.Term == raft.CurrentTerm {
+		if raft.CurrentRole != "follower" {
+			go raft.CheckLeaderFailure()
+		}
 		raft.CurrentRole = "follower"
 		raft.CurrentLeader = req.LeaderId
 	}
@@ -302,7 +328,8 @@ func (raft *OriginalRaft) HandleLogResponse(resp *LogResponse) error {
 			return fmt.Errorf("failed to set voted for: %w", err)
 		}
 		raft.CurrentRole = "follower"
-		//TODO: cancel election timer
+		go raft.CheckLeaderFailure()
+		raft.electionTimerCancel()
 	}
 	return nil
 }
@@ -319,7 +346,6 @@ func (raft *OriginalRaft) acks(length int) int {
 
 // Executed by leader only
 func (raft *OriginalRaft) CommitLogEntries() error {
-	raft.logger.Infow("Committing log entries")
 	numNodes := len(raft.AckedLength)
 	minAcks := (numNodes + 1) / 2
 	ready := make([]int, 0)
@@ -355,14 +381,131 @@ func (raft *OriginalRaft) CommitLogEntries() error {
 	return nil
 }
 
+func (raft *OriginalRaft) StartElectionTimer() context.CancelFunc {
+	ctx, cancel := context.WithCancel(context.Background())
+	raft.electionTimer = time.NewTimer(time.Duration(25 + rand.Intn(20)) * time.Second)
+	go func() {
+		select {
+		case <-raft.electionTimer.C:
+			raft.logger.Infow("Election timer expired")
+			err := raft.StartElection()
+			if err != nil {
+				raft.logger.Errorw("Failed to start election", "error", err)
+			}
+		case <-ctx.Done():
+			raft.electionTimer.Stop()
+			return
+		}
+	}()
+	return cancel
+}
+
+func (raft *OriginalRaft) StartElection() error {
+	raft.logger.Infow("Starting election", "current_term", raft.CurrentTerm)
+	err := raft.setCurrentTerm(raft.CurrentTerm + 1)
+	if err != nil {
+		return fmt.Errorf("failed to set current term: %w", err)
+	}
+	raft.CurrentRole = "candidate"
+	err = raft.setVotedFor(raft.nodeID)
+	if err != nil {
+		return fmt.Errorf("failed to set voted for: %w", err)
+	}
+	raft.VotesReceived[raft.nodeID] = struct{}{}
+	lastTerm := 0
+	if len(raft.Log) > 0 {
+		lastTerm = raft.Log[len(raft.Log)-1].Term
+	}
+	// send to peers
+	for _, peerID := range raft.peers {
+		raft.logger.Infow("Sending vote request to peer", "peer_id", peerID, "candidate_id", raft.nodeID, "term", raft.CurrentTerm, "log_length", len(raft.Log), "log_term", lastTerm)
+		raft.transport.SendVoteRequest(peerID, &VoteRequest{
+			CandidateId: raft.nodeID,
+			Term:        raft.CurrentTerm,
+			LogLength:   len(raft.Log),
+			LogTerm:     lastTerm,
+		})
+	}
+	// send to himself
+	raft.logger.Infow("Sending vote request to himself", "candidate_id", raft.nodeID, "term", raft.CurrentTerm, "log_length", len(raft.Log), "log_term", lastTerm)
+	raft.transport.SendVoteRequest(raft.nodeID, &VoteRequest{
+		CandidateId: raft.nodeID,
+		Term:        raft.CurrentTerm,
+		LogLength:   len(raft.Log),
+		LogTerm:     lastTerm,
+	})
+	raft.electionTimerCancel = raft.StartElectionTimer()
+	return nil
+}
+
 func (raft *OriginalRaft) RequestVote(req *VoteRequest) error {
-	raft.logger.Infow("Received vote request", "candidate_id", req.CandidateId, "term", req.Term)
-	// TODO: implement
+	raft.logger.Infow("Received vote request", "candidate_id", req.CandidateId, "term", req.Term, "log_length", req.LogLength, "log_term", req.LogTerm)
+	if req.Term > raft.CurrentTerm {
+		err := raft.setCurrentTerm(req.Term)
+		if err != nil {
+			return fmt.Errorf("failed to set current term: %w", err)
+		}
+		raft.CurrentRole = "follower"
+		go raft.CheckLeaderFailure()
+		err = raft.setVotedFor("")
+		if err != nil {
+			return fmt.Errorf("failed to set voted for: %w", err)
+		}
+	}
+	lastTerm := 0
+	if len(raft.Log) > 0 {
+		lastTerm = raft.Log[len(raft.Log)-1].Term
+	}
+	logOk := (req.LogTerm > lastTerm) || (req.LogTerm == lastTerm && req.LogLength >= len(raft.Log))
+	if req.Term == raft.CurrentTerm && logOk && (raft.VotedFor == "" || raft.VotedFor == req.CandidateId) {
+		err := raft.setVotedFor(req.CandidateId)
+		if err != nil {
+			return fmt.Errorf("failed to set voted for: %w", err)
+		}
+		raft.logger.Infow("Sending vote response to candidate", "candidate_id", req.CandidateId, "voter_id", raft.nodeID, "term", raft.CurrentTerm, "granted", true)
+		raft.transport.SendVoteResponse(req.CandidateId, &VoteResponse{
+			VoterId: raft.nodeID,
+			Term:    raft.CurrentTerm,
+			Granted: true,
+		})
+	} else {
+		raft.transport.SendVoteResponse(req.CandidateId, &VoteResponse{
+			VoterId: raft.nodeID,
+			Term:    raft.CurrentTerm,
+			Granted: false,
+		})
+	}
 	return nil
 }
 
 func (raft *OriginalRaft) HandleVoteResponse(resp *VoteResponse) error {
-	raft.logger.Infow("Received vote response", "voter_id", resp.VoterId, "granted", resp.Granted, "term", resp.Term)
-	// TODO: implement
+	raft.logger.Infow("Received vote response", "voter_id", resp.VoterId, "term", resp.Term, "granted", resp.Granted)
+	if raft.CurrentRole == "candidate" && raft.CurrentTerm == resp.Term && resp.Granted {
+		raft.VotesReceived[resp.VoterId] = struct{}{}
+		numNodes := len(raft.peers) + 1
+		if len(raft.VotesReceived) >= (numNodes+1)/2 {
+			raft.logger.Infow("Received enough votes to become leader")
+			raft.CurrentRole = "leader"
+			raft.CurrentLeader = raft.nodeID
+			raft.electionTimerCancel()
+			for _, peerID := range raft.peers {
+				raft.SentLength[peerID] = len(raft.Log)
+				raft.AckedLength[peerID] = 0
+				raft.ReplicateLog(peerID)
+			}
+		}
+	} else if resp.Term > raft.CurrentTerm {
+		err := raft.setCurrentTerm(resp.Term)
+		if err != nil {
+			return fmt.Errorf("failed to set current term: %w", err)
+		}
+		raft.CurrentRole = "follower"
+		go raft.CheckLeaderFailure()
+		err = raft.setVotedFor("")
+		if err != nil {
+			return fmt.Errorf("failed to set voted for: %w", err)
+		}
+		raft.electionTimerCancel()
+	}
 	return nil
 }

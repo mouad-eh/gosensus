@@ -280,6 +280,15 @@ func (s *gRPCServer) SendLogResponse(nodeID string, req *LogResponse) {
 }
 
 func (s *gRPCServer) SendVoteRequest(nodeID string, req *VoteRequest) {
+	if nodeID == s.nodeID {
+		s.RequestVote(context.Background(), &pb.VoteRequest{
+			CandidateId: req.CandidateId,
+			Term:        int32(req.Term),
+			LogLength:   int32(req.LogLength),
+			LogTerm:     int32(req.LogTerm),
+		})
+		return
+	}
 	peer := s.peers[nodeID]
 
 	go func() {
@@ -297,6 +306,14 @@ func (s *gRPCServer) SendVoteRequest(nodeID string, req *VoteRequest) {
 }
 
 func (s *gRPCServer) SendVoteResponse(nodeID string, req *VoteResponse) {
+	if nodeID == s.nodeID {
+		s.HandleVoteResponse(context.Background(), &pb.VoteResponse{
+			VoterId: req.VoterId,
+			Term:    int32(req.Term),
+			Granted: req.Granted,
+		})
+		return
+	}
 	peer := s.peers[nodeID]
 
 	go func() {
