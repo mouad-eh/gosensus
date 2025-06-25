@@ -37,12 +37,10 @@ type OriginalRaft struct {
 	mu sync.RWMutex
 	// Heartbeat timer
 	heartbeatTimer *time.Timer
-	// // Election timer
-	// electionTimer *time.Timer
-	// Election timer cancel function
-	electionTimerCancel context.CancelFunc
 	// Election context
 	electionTimerCtx context.Context
+	// Election timer cancel function
+	electionTimerCancel context.CancelFunc
 }
 
 func NewOriginalRaft(nodeID string, peers []string, transport Transport, storage persistence.Storage, logger *zap.SugaredLogger) *OriginalRaft {
