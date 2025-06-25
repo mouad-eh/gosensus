@@ -37,10 +37,12 @@ type OriginalRaft struct {
 	mu sync.RWMutex
 	// Heartbeat timer
 	heartbeatTimer *time.Timer
-	// Election timer
-	electionTimer *time.Timer
+	// // Election timer
+	// electionTimer *time.Timer
 	// Election timer cancel function
 	electionTimerCancel context.CancelFunc
+	// Election context
+	electionTimerCtx context.Context
 }
 
 func NewOriginalRaft(nodeID string, peers []string, transport Transport, storage persistence.Storage, logger *zap.SugaredLogger) *OriginalRaft {
@@ -130,6 +132,8 @@ func (raft *OriginalRaft) Init(role string) error {
 	go raft.PeriodicReplicateLog(ticker.C)
 	// Start heartbeat timer
 	go raft.CheckLeaderFailure()
+	// Start election timer
+	raft.electionTimerCtx, raft.electionTimerCancel = context.WithCancel(context.Background())
 
 	return nil
 }
@@ -237,7 +241,7 @@ func (raft *OriginalRaft) RequestLog(req *LogRequest) error {
 		if err != nil {
 			return fmt.Errorf("failed to set voted for: %w", err)
 		}
-		raft.electionTimerCancel()
+		raft.CancelElectionTimer()
 	}
 	if req.Term == raft.CurrentTerm {
 		if raft.CurrentRole != "follower" {
@@ -329,7 +333,7 @@ func (raft *OriginalRaft) HandleLogResponse(resp *LogResponse) error {
 		}
 		raft.CurrentRole = "follower"
 		go raft.CheckLeaderFailure()
-		raft.electionTimerCancel()
+		raft.CancelElectionTimer()
 	}
 	return nil
 }
@@ -381,25 +385,6 @@ func (raft *OriginalRaft) CommitLogEntries() error {
 	return nil
 }
 
-func (raft *OriginalRaft) StartElectionTimer() context.CancelFunc {
-	ctx, cancel := context.WithCancel(context.Background())
-	raft.electionTimer = time.NewTimer(time.Duration(25 + rand.Intn(20)) * time.Second)
-	go func() {
-		select {
-		case <-raft.electionTimer.C:
-			raft.logger.Infow("Election timer expired")
-			err := raft.StartElection()
-			if err != nil {
-				raft.logger.Errorw("Failed to start election", "error", err)
-			}
-		case <-ctx.Done():
-			raft.electionTimer.Stop()
-			return
-		}
-	}()
-	return cancel
-}
-
 func (raft *OriginalRaft) StartElection() error {
 	raft.logger.Infow("Starting election", "current_term", raft.CurrentTerm)
 	err := raft.setCurrentTerm(raft.CurrentTerm + 1)
@@ -434,8 +419,30 @@ func (raft *OriginalRaft) StartElection() error {
 		LogLength:   len(raft.Log),
 		LogTerm:     lastTerm,
 	})
-	raft.electionTimerCancel = raft.StartElectionTimer()
+	raft.StartElectionTimer()
 	return nil
+}
+
+func (raft *OriginalRaft) StartElectionTimer() {
+	electionTimer := time.NewTimer(time.Duration(25+rand.Intn(20)) * time.Second)
+	go func() {
+		select {
+		case <-electionTimer.C:
+			raft.logger.Infow("Election timer expired")
+			err := raft.StartElection()
+			if err != nil {
+				raft.logger.Errorw("Failed to start election", "error", err)
+			}
+		case <-raft.electionTimerCtx.Done():
+			electionTimer.Stop()
+			return
+		}
+	}()
+}
+
+func (raft *OriginalRaft) CancelElectionTimer() {
+	raft.electionTimerCancel()
+	raft.electionTimerCtx, raft.electionTimerCancel = context.WithCancel(context.Background())
 }
 
 func (raft *OriginalRaft) RequestVote(req *VoteRequest) error {
@@ -487,7 +494,7 @@ func (raft *OriginalRaft) HandleVoteResponse(resp *VoteResponse) error {
 			raft.logger.Infow("Received enough votes to become leader")
 			raft.CurrentRole = "leader"
 			raft.CurrentLeader = raft.nodeID
-			raft.electionTimerCancel()
+			raft.CancelElectionTimer()
 			for _, peerID := range raft.peers {
 				raft.SentLength[peerID] = len(raft.Log)
 				raft.AckedLength[peerID] = 0
@@ -505,7 +512,7 @@ func (raft *OriginalRaft) HandleVoteResponse(resp *VoteResponse) error {
 		if err != nil {
 			return fmt.Errorf("failed to set voted for: %w", err)
 		}
-		raft.electionTimerCancel()
+		raft.CancelElectionTimer()
 	}
 	return nil
 }
