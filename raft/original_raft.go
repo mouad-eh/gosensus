@@ -51,7 +51,6 @@ func NewOriginalRaft(nodeID string, peers []string, transport Transport, storage
 		storage:        storage,
 		logger:         logger,
 		delivered:      make(map[int]chan struct{}),
-		heartbeatTimer: time.NewTimer(time.Duration(25+rand.Intn(20)) * time.Second),
 	}
 }
 
@@ -121,6 +120,9 @@ func (raft *OriginalRaft) Init(role string) error {
 	}
 	// Initialize volatile state
 	raft.CurrentRole = role
+	if raft.CurrentRole == "follower" {
+		raft.startHeartbeatTimer()
+	}
 	raft.CurrentLeader = ""
 	raft.VotesReceived = make(map[string]struct{})
 	raft.SentLength = make(map[string]int)
@@ -128,12 +130,39 @@ func (raft *OriginalRaft) Init(role string) error {
 	// Start periodic replication
 	ticker := time.NewTicker(10 * time.Second)
 	go raft.PeriodicReplicateLog(ticker.C)
-	// Start heartbeat timer
-	go raft.CheckLeaderFailure()
 	// Start election timer
 	raft.electionTimerCtx, raft.electionTimerCancel = context.WithCancel(context.Background())
 
 	return nil
+}
+
+
+func (raft *OriginalRaft) startHeartbeatTimer() {
+	raft.heartbeatTimer = time.NewTimer(time.Duration(25+rand.Intn(20)) * time.Second)
+	go func() {
+		<-raft.heartbeatTimer.C
+		raft.logger.Infow("Heartbeat timeout")
+		err := raft.StartElection()
+		if err != nil {
+			raft.logger.Errorw("Failed to start election", "error", err)	
+		}
+	}()
+}
+
+func (raft *OriginalRaft) resetHeartbeatTimer() {
+	raft.heartbeatTimer.Reset(time.Duration(25+rand.Intn(20)) * time.Second)
+}
+
+
+func (raft *OriginalRaft) transitionToRole(role string) {
+	oldRole := raft.CurrentRole
+	raft.CurrentRole = role
+	if oldRole == "leader" && raft.CurrentRole == "follower" {
+		raft.startHeartbeatTimer()
+	}
+	if oldRole == "candidate" && raft.CurrentRole == "follower" {
+		raft.startHeartbeatTimer()
+	}
 }
 
 func (raft *OriginalRaft) CheckLeaderFailure() error {
@@ -229,7 +258,6 @@ func (raft *OriginalRaft) ReplicateLog(followerID string) {
 
 func (raft *OriginalRaft) RequestLog(req *LogRequest) error {
 	raft.logger.Infow("Received log request", "leader_id", req.LeaderId, "term", req.Term)
-	raft.heartbeatTimer.Reset(time.Duration(25+rand.Intn(10)) * time.Second)
 	if req.Term > raft.CurrentTerm {
 		err := raft.setCurrentTerm(req.Term)
 		if err != nil {
@@ -242,10 +270,7 @@ func (raft *OriginalRaft) RequestLog(req *LogRequest) error {
 		raft.CancelElectionTimer()
 	}
 	if req.Term == raft.CurrentTerm {
-		if raft.CurrentRole != "follower" {
-			go raft.CheckLeaderFailure()
-		}
-		raft.CurrentRole = "follower"
+		raft.transitionToRole("follower")
 		raft.CurrentLeader = req.LeaderId
 	}
 	logOk := len(raft.Log) >= req.PrefixLen && (req.PrefixLen == 0 || raft.Log[req.PrefixLen-1].Term == req.PrefixTerm)
@@ -269,6 +294,7 @@ func (raft *OriginalRaft) RequestLog(req *LogRequest) error {
 			Success:    false,
 		})
 	}
+	raft.resetHeartbeatTimer()
 	return nil
 }
 
@@ -329,8 +355,7 @@ func (raft *OriginalRaft) HandleLogResponse(resp *LogResponse) error {
 		if err != nil {
 			return fmt.Errorf("failed to set voted for: %w", err)
 		}
-		raft.CurrentRole = "follower"
-		go raft.CheckLeaderFailure()
+		raft.transitionToRole("follower")
 		raft.CancelElectionTimer()
 	}
 	return nil
@@ -389,7 +414,7 @@ func (raft *OriginalRaft) StartElection() error {
 	if err != nil {
 		return fmt.Errorf("failed to set current term: %w", err)
 	}
-	raft.CurrentRole = "candidate"
+	raft.transitionToRole("candidate")
 	err = raft.setVotedFor(raft.nodeID)
 	if err != nil {
 		return fmt.Errorf("failed to set voted for: %w", err)
@@ -450,8 +475,7 @@ func (raft *OriginalRaft) RequestVote(req *VoteRequest) error {
 		if err != nil {
 			return fmt.Errorf("failed to set current term: %w", err)
 		}
-		raft.CurrentRole = "follower"
-		go raft.CheckLeaderFailure()
+		raft.transitionToRole("follower")
 		err = raft.setVotedFor("")
 		if err != nil {
 			return fmt.Errorf("failed to set voted for: %w", err)
@@ -490,7 +514,7 @@ func (raft *OriginalRaft) HandleVoteResponse(resp *VoteResponse) error {
 		numNodes := len(raft.peers) + 1
 		if len(raft.VotesReceived) >= (numNodes+1)/2 {
 			raft.logger.Infow("Received enough votes to become leader")
-			raft.CurrentRole = "leader"
+			raft.transitionToRole("leader")
 			raft.CurrentLeader = raft.nodeID
 			raft.CancelElectionTimer()
 			for _, peerID := range raft.peers {
@@ -504,8 +528,7 @@ func (raft *OriginalRaft) HandleVoteResponse(resp *VoteResponse) error {
 		if err != nil {
 			return fmt.Errorf("failed to set current term: %w", err)
 		}
-		raft.CurrentRole = "follower"
-		go raft.CheckLeaderFailure()
+		raft.transitionToRole("follower")
 		err = raft.setVotedFor("")
 		if err != nil {
 			return fmt.Errorf("failed to set voted for: %w", err)
