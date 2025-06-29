@@ -18,7 +18,6 @@ type GRPCServerConfig struct {
 	IP         net.IP
 	NodePort   int
 	ClientPort int
-	Leader     *net.TCPAddr
 	Peers      []*net.TCPAddr
 }
 
@@ -57,13 +56,9 @@ func (s *gRPCServer) Run() error {
 		peers[i] = generateNodeID(peer.String())
 	}
 	s.raft = NewOriginalRaft(s.nodeID, peers, s, persistence.NewJSONStorage(s.nodeID), s.logger)
-	// determine role
-	role := "follower"
-	if s.nodeID == generateNodeID(s.config.Leader.String()) {
-		role = "leader"
-	}
+
 	// Initialize raft
-	if err := s.raft.Init(role); err != nil {
+	if err := s.raft.Init(); err != nil {
 		return fmt.Errorf("failed to initialize raft: %v", err)
 	}
 	// Connect to all peers
@@ -221,6 +216,14 @@ func (s *gRPCServer) HandleVoteResponse(ctx context.Context, resp *pb.VoteRespon
 
 // Transport interface implementation
 func (s *gRPCServer) SendBroadcastRequest(ctx context.Context, nodeID string, req *BroadcastRequest) (*BroadcastResponse, error) {
+	if nodeID == s.nodeID {
+		resp, err := s.raft.Broadcast(ctx, req)
+		if err != nil {
+			s.logger.Errorw("Failed to broadcast", "error", err)
+			return nil, err
+		}
+		return resp, nil
+	}
 	peer := s.peers[nodeID]
 
 	resp, err := peer.Broadcast(ctx, &pb.BroadcastRequest{

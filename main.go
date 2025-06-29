@@ -16,12 +16,11 @@ func main() {
 	clientPort := flag.Int("client-port", 0, "Client server port")
 	nodePort := flag.Int("node-port", 0, "Node server port")
 	peersStr := flag.String("peers", "", "Comma-separated list of peer addresses (e.g., localhost:9002,localhost:9003)")
-	leaderAddr := flag.String("leader", "", "Address of the designated leader node (e.g., localhost:9001)")
 	flag.Parse()
 
 	// Validate required flags
-	if *clientPort == 0 || *nodePort == 0 || *peersStr == "" || *leaderAddr == "" {
-		fmt.Println("Error: --client-port, --node-port, --peers, and --leader are required")
+	if *clientPort == 0 || *nodePort == 0 || *peersStr == "" {
+		fmt.Println("Error: --client-port, --node-port, and --peers are required")
 		flag.Usage()
 		os.Exit(1)
 	}
@@ -29,12 +28,6 @@ func main() {
 	nodeIP := net.ParseIP(*ipAddr)
 	if nodeIP == nil {
 		fmt.Printf("Error: invalid IP address: %s\n", *ipAddr)
-		os.Exit(1)
-	}
-
-	leaderIP, err := net.ResolveTCPAddr("tcp", *leaderAddr)
-	if err != nil {
-		fmt.Printf("Error resolving leader address: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -63,7 +56,6 @@ func main() {
 		IP:         nodeIP,
 		NodePort:   *nodePort,
 		ClientPort: *clientPort,
-		Leader:     leaderIP,
 		Peers:      peers,
 	}
 

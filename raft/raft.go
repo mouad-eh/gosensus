@@ -5,7 +5,7 @@ import (
 )
 
 type Raft interface {
-	Init(role string) error
+	Init() error
 	Broadcast(ctx context.Context, req *BroadcastRequest) (*BroadcastResponse, error)
 	RequestVote(req *VoteRequest) error
 	HandleVoteResponse(req *VoteResponse) error

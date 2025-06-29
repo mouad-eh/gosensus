@@ -30,7 +30,8 @@ func main() {
 	c := pb.NewRaftClientClient(conn)
 
 	// Set timeout context
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	// Timout must be greater than the heartbeat timeout
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 
 	// Send broadcast request

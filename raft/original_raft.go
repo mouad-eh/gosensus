@@ -37,6 +37,8 @@ type OriginalRaft struct {
 	mu sync.RWMutex
 	// Heartbeat timer
 	heartbeatTimer *time.Timer
+	// Leader election channel
+	leaderElected chan struct{}
 	// Election context
 	electionTimerCtx context.Context
 	// Election timer cancel function
@@ -45,12 +47,13 @@ type OriginalRaft struct {
 
 func NewOriginalRaft(nodeID string, peers []string, transport Transport, storage persistence.Storage, logger *zap.SugaredLogger) *OriginalRaft {
 	return &OriginalRaft{
-		nodeID:         nodeID,
-		peers:          peers,
-		transport:      transport,
-		storage:        storage,
-		logger:         logger,
-		delivered:      make(map[int]chan struct{}),
+		nodeID:        nodeID,
+		peers:         peers,
+		transport:     transport,
+		storage:       storage,
+		logger:        logger,
+		delivered:     make(map[int]chan struct{}),
+		leaderElected: make(chan struct{}, 1),
 	}
 }
 
@@ -98,7 +101,7 @@ func (raft *OriginalRaft) setCommitLength(length int) error {
 	return nil
 }
 
-func (raft *OriginalRaft) Init(role string) error {
+func (raft *OriginalRaft) Init() error {
 	if err := raft.storage.Init(raft.nodeID); err != nil {
 		return fmt.Errorf("failed to initialize storage: %w", err)
 	}
@@ -119,10 +122,8 @@ func (raft *OriginalRaft) Init(role string) error {
 		}
 	}
 	// Initialize volatile state
-	raft.CurrentRole = role
-	if raft.CurrentRole == "follower" {
-		raft.startHeartbeatTimer()
-	}
+	raft.CurrentRole = "follower"
+	raft.startHeartbeatTimer()
 	raft.CurrentLeader = ""
 	raft.VotesReceived = make(map[string]struct{})
 	raft.SentLength = make(map[string]int)
@@ -136,7 +137,6 @@ func (raft *OriginalRaft) Init(role string) error {
 	return nil
 }
 
-
 func (raft *OriginalRaft) startHeartbeatTimer() {
 	raft.heartbeatTimer = time.NewTimer(time.Duration(25+rand.Intn(20)) * time.Second)
 	go func() {
@@ -144,7 +144,7 @@ func (raft *OriginalRaft) startHeartbeatTimer() {
 		raft.logger.Infow("Heartbeat timeout")
 		err := raft.StartElection()
 		if err != nil {
-			raft.logger.Errorw("Failed to start election", "error", err)	
+			raft.logger.Errorw("Failed to start election", "error", err)
 		}
 	}()
 }
@@ -153,7 +153,6 @@ func (raft *OriginalRaft) resetHeartbeatTimer() {
 	raft.heartbeatTimer.Reset(time.Duration(25+rand.Intn(20)) * time.Second)
 }
 
-
 func (raft *OriginalRaft) transitionToRole(role string) {
 	oldRole := raft.CurrentRole
 	raft.CurrentRole = role
@@ -161,8 +160,22 @@ func (raft *OriginalRaft) transitionToRole(role string) {
 		raft.startHeartbeatTimer()
 	}
 	if oldRole == "candidate" && raft.CurrentRole == "follower" {
+		raft.CancelElectionTimer()
 		raft.startHeartbeatTimer()
 	}
+}
+
+func (raft *OriginalRaft) setCurrentLeader(leaderID string) {
+	raft.CurrentLeader = leaderID
+	// fire and forget
+	select {
+	case raft.leaderElected <- struct{}{}:
+	default:
+	}
+}
+
+func (raft *OriginalRaft) waitForLeaderToBeElected() {
+	<-raft.leaderElected
 }
 
 func (raft *OriginalRaft) CheckLeaderFailure() error {
@@ -217,6 +230,10 @@ func (raft *OriginalRaft) Broadcast(ctx context.Context, req *BroadcastRequest) 
 			NodeId:  raft.nodeID,
 		}, nil
 	} else {
+		if raft.CurrentLeader == "" {
+			raft.logger.Infow("No leader found, waiting for leader election")
+			raft.waitForLeaderToBeElected()
+		}
 		leaderID := raft.CurrentLeader
 		resp, err := raft.transport.SendBroadcastRequest(ctx, leaderID, req)
 		if err != nil {
@@ -271,7 +288,7 @@ func (raft *OriginalRaft) RequestLog(req *LogRequest) error {
 	}
 	if req.Term == raft.CurrentTerm {
 		raft.transitionToRole("follower")
-		raft.CurrentLeader = req.LeaderId
+		raft.setCurrentLeader(req.LeaderId)
 	}
 	logOk := len(raft.Log) >= req.PrefixLen && (req.PrefixLen == 0 || raft.Log[req.PrefixLen-1].Term == req.PrefixTerm)
 	if req.Term == raft.CurrentTerm && logOk {
@@ -515,7 +532,7 @@ func (raft *OriginalRaft) HandleVoteResponse(resp *VoteResponse) error {
 		if len(raft.VotesReceived) >= (numNodes+1)/2 {
 			raft.logger.Infow("Received enough votes to become leader")
 			raft.transitionToRole("leader")
-			raft.CurrentLeader = raft.nodeID
+			raft.setCurrentLeader(raft.nodeID)
 			raft.CancelElectionTimer()
 			for _, peerID := range raft.peers {
 				raft.SentLength[peerID] = len(raft.Log)
