@@ -39,6 +39,5 @@ func main() {
 	if err != nil {
 		log.Fatalf("could not broadcast: %v", err)
 	}
-
-	log.Printf("Broadcast response from node %s: %v", resp.GetNodeId(), resp.GetSuccess())
+	log.Printf("Leader %s broadcasted message '%s'", resp.GetLeaderId(), *message)
 }

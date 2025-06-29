@@ -226,8 +226,7 @@ func (raft *OriginalRaft) Broadcast(ctx context.Context, req *BroadcastRequest) 
 		}
 		raft.logger.Infow("Acknowledged broadcast request", "message", req.Message)
 		return &BroadcastResponse{
-			Success: true,
-			NodeId:  raft.nodeID,
+			LeaderId: raft.CurrentLeader,
 		}, nil
 	} else {
 		if raft.CurrentLeader == "" {

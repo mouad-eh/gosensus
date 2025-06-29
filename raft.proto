@@ -15,8 +15,7 @@ message BroadcastRequest {
 }
 
 message BroadcastResponse {
-  bool success = 1;
-  string node_id = 2;
+  string leader_id = 1;
 }
 
 service RaftNode {

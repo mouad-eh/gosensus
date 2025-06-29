@@ -18,8 +18,7 @@ type BroadcastRequest struct {
 }
 
 type BroadcastResponse struct {
-	Success bool
-	NodeId  string
+	LeaderId string
 }
 
 type VoteRequest struct {

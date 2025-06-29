@@ -144,8 +144,7 @@ func (s *gRPCServer) Broadcast(ctx context.Context, req *pb.BroadcastRequest) (*
 		return nil, err
 	}
 	return &pb.BroadcastResponse{
-		Success: response.Success,
-		NodeId:  response.NodeId,
+		LeaderId: response.LeaderId,
 	}, nil
 }
 
@@ -234,8 +233,7 @@ func (s *gRPCServer) SendBroadcastRequest(ctx context.Context, nodeID string, re
 		return nil, err
 	}
 	return &BroadcastResponse{
-		Success: resp.Success,
-		NodeId:  resp.NodeId,
+		LeaderId: resp.LeaderId,
 	}, nil
 }
 
