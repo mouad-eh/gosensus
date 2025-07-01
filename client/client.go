@@ -6,7 +6,7 @@ import (
 	"log"
 	"time"
 
-	pb "github.com/mouad-eh/gosensus/rpc"
+	pb "github.com/mouad-eh/gosensus/raft/rpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )

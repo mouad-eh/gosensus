@@ -7,7 +7,7 @@ import (
 	"os"
 
 	"github.com/mouad-eh/gosensus/raft/persistence"
-	pb "github.com/mouad-eh/gosensus/rpc"
+	pb "github.com/mouad-eh/gosensus/raft/rpc"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
