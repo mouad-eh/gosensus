@@ -27,7 +27,7 @@ tmux send-keys -t raft:2 "go run main.go --ip 127.0.0.1 --client-port 8002 --nod
 tmux send-keys -t raft:3 "go run main.go --ip 127.0.0.1 --client-port 8003 --node-port 9003 --peers 127.0.0.1:9001,127.0.0.1:9002 2>&1 " C-m
 
 # Client (ready to be executed manually)
-tmux send-keys -t raft:4 "go run client/client.go --node localhost:8001 --message 'hi'"
+tmux send-keys -t raft:4 "go run clients/raft.go --node localhost:8001 --message 'hi'"
 
 # Attach to the tmux session
 tmux attach-session -t raft
